@@ -6,6 +6,52 @@ This is the ops layer I built to handle that. It keeps the gateway healthy, auto
 
 Tested against OpenClaw `2026.4.2`.
 
+## What it fixes
+
+**Gateway**
+- Gateway went down (overnight or after an update)
+- Port conflict blocking startup
+- `auth: "none"` removed in v2026.1.29 — gateway exits immediately after upgrade
+- Discord WebSocket disconnects + stuck typing indicator (v2026.2.24)
+
+**Exec approvals** *(most common post-update breakage)*
+- Named agent entries with empty allowlists silently shadow the `*` wildcard — agents stall even though the global rule looks correct
+- `tools.exec.ask` and `tools.exec.security` reset by update defaults — complex commands blocked even after allowlists are fixed
+- Both layers must be correct or agents keep sending `/approve <id> allow-always` requests
+
+**Auth**
+- No API key / broken auth — blocks all agent activity
+- Anthropic OAuth token rejected (policy block — must switch to direct API key)
+- Non-Anthropic provider token expired
+
+**Cron jobs**
+- Jobs auto-disabled after consecutive errors — silent, easy to miss for days
+
+**Sessions**
+- Agents stuck in a rapid-fire loop
+- Session files bloated past 10MB
+- Dead sessions that appear to be running (0 tokens, empty content)
+
+**Channels**
+- Slack: bot receives but can't reply (`missing_scope`); token expired (`invalid_auth`)
+- WhatsApp: disconnection loop (usually Bun instead of Node)
+- Telegram: bot token not set or not responding
+- iMessage: Full Disk Access not granted
+- BlueBubbles: private network fetch blocked; null message body from tapbacks crashing gateway
+- Discord: WebSocket 1005/1006, goes offline for 30+ min
+- Teams: not available until the plugin is installed (moved to plugin in v2026.1.15)
+
+**Security**
+- Config hardening gaps — scored 0-100 with specific fixes
+- `config.get` leaking unredacted secrets via `sourceConfig`
+- Unauthorized skill file changes detected via SHA-256 drift
+- Credential patterns leaked into `~/.openclaw/` files or wrong file permissions
+- Third-party ClawHub skills with hardcoded secrets, suspicious network calls, or prompt injection
+
+**Updates**
+- Version change detection — explains what config broke and why after a specific bump
+- CVE-2026-25253 (one-click RCE via token leakage) + 40+ SSRF, path traversal, and prompt injection fixes in v2026.2.12
+
 ## What it does
 
 **As a Claude skill** — load `/openclaw-ops` and your AI does the triage: checks gateway health, auth, exec approvals, cron jobs, channels, and sessions, then explains what is broken and fixes it.
