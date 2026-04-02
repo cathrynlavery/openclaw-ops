@@ -1,34 +1,39 @@
 # openclaw-ops
 
-OpenClaw gateway operations skill for agent environments. It covers health checks, repair workflows, continuous monitoring, update-change detection, and security review for a local or self-hosted OpenClaw install.
+OpenClaw updates break things. Gateway goes down, exec approvals start blocking your agents, config fields get reset by new defaults — and none of it announces itself. You just notice your agents have gone quiet.
+
+This is the ops layer I built to handle that. It keeps the gateway healthy, auto-repairs the most common breakages, and tells you exactly what changed when an update rolls through. I give it to every agent environment I run.
 
 Tested against OpenClaw `2026.4.2`.
 
+## What it does
+
+**As a Claude skill** — load `/openclaw-ops` and your AI does the triage: checks gateway health, auth, exec approvals, cron jobs, channels, and sessions, then explains what is broken and fixes it.
+
+**As standalone scripts** — run these directly from any shell:
+
+- `scripts/heal.sh` — one-shot auto-fix for the most common gateway issues
+- `scripts/check-update.sh` — detects version changes and explains what config broke and why
+- `scripts/watchdog.sh` — runs every 5 minutes, restarts gateway if down, escalates after 3 failures
+- `scripts/watchdog-install.sh` — installs the watchdog as a macOS LaunchAgent (survives reboots)
+- `scripts/health-check.sh` — declarative URL/process health checks for gateway-adjacent dependencies
+- `scripts/security-scan.sh` — config hardening and credential exposure scan with redacted findings
+- `scripts/skill-audit.sh` — static audit for third-party skills before installation
+
 ## Install
 
-Clone or copy this directory into your OpenClaw skills folder as `openclaw-ops`:
+Clone into your OpenClaw skills folder:
 
 ```bash
 git clone https://github.com/cathrynlavery/openclaw-ops.git ~/.openclaw/skills/openclaw-ops
 ```
 
-Then run the scripts from that installed path, for example:
+Then run scripts from that path:
 
 ```bash
 cd ~/.openclaw/skills/openclaw-ops
-bash scripts/check-update.sh
+bash scripts/heal.sh
 ```
-
-## What it does
-
-- **`/openclaw-ops`** (skill) — full triage and configuration: gateway, auth, exec approvals, cron jobs, channels, sessions, and installation
-- **`scripts/heal.sh`** — one-shot auto-fix for the most common gateway issues
-- **`scripts/check-update.sh`** — detects version changes and explains what config broke and why
-- **`scripts/watchdog.sh`** — runs every 5 minutes, restarts gateway if down, escalates after 3 failures
-- **`scripts/watchdog-install.sh`** — installs the watchdog as a macOS LaunchAgent
-- **`scripts/health-check.sh`** — declarative URL/process health checks for gateway-adjacent dependencies
-- **`scripts/security-scan.sh`** — config hardening and credential exposure scan with redacted findings
-- **`scripts/skill-audit.sh`** — static audit for third-party skills before installation
 
 ## Prerequisites
 
@@ -50,7 +55,6 @@ bash scripts/check-update.sh
 
 **v2026.2.12** or later. Versions before this contain critical CVEs (including CVE-2026-25253 plus additional SSRF, path traversal, and prompt-injection fixes).
 
-Check the installed version with:
 ```bash
 openclaw --version
 ```
@@ -58,23 +62,23 @@ openclaw --version
 ## Quick start
 
 ```bash
-# 1. One-time heal pass
+# Run a one-time heal pass — fixes the most common issues immediately
 bash scripts/heal.sh
 
-# 2. Check if an update broke your config
+# Check if a recent update broke your config
 bash scripts/check-update.sh        # report only
 bash scripts/check-update.sh --fix  # report + auto-fix
 
-# 3. Install always-on watchdog (macOS)
+# Install the always-on watchdog (macOS)
 bash scripts/watchdog-install.sh
 
-# 4. View watchdog log
+# View watchdog log
 tail -f ~/.openclaw/logs/watchdog.log
 
-# 5. View incident history
+# View incident history
 cat ~/.openclaw/logs/heal-incidents.jsonl
 
-# 6. Copy the sample health targets file and run a fleet check
+# Run dependency health checks
 mkdir -p ~/.openclaw
 cp templates/health-targets.conf.example ~/.openclaw/health-targets.conf
 bash scripts/health-check.sh --verbose
@@ -90,7 +94,7 @@ bash scripts/health-check.sh --verbose
 
 1. **Tier 1** — HTTP ping every 5 min (LaunchAgent)
 2. **Tier 2** — Gateway restart + `heal.sh` if simple restart fails
-3. **Tier 3** — macOS notification after 3 failed attempts in 15 min
+3. **Tier 3** — macOS notification after 3 failed attempts in 15 min; requires manual intervention
 
 ## Platform support
 
