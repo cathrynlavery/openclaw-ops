@@ -24,6 +24,11 @@ Tested against OpenClaw `2026.4.2`.
 - Anthropic OAuth token rejected (policy block — must switch to direct API key)
 - Non-Anthropic provider token expired
 
+**Claude CLI backend** *(silent failure most people don't catch)*
+- The onboarding wizard sets `cliBackends` key to `"claude"` instead of `"claude-cli"` — model dispatch silently fails and agents fall back to other providers without telling you
+- Stale `claude-cli` entries in `models.providers` create a broken API path that bypasses the subprocess entirely
+- Agent-level config files accumulate orphaned provider blocks that conflict with global settings
+
 **Cron jobs**
 - Jobs auto-disabled after consecutive errors — silent, easy to miss for days
 
@@ -58,13 +63,16 @@ Tested against OpenClaw `2026.4.2`.
 
 **As standalone scripts** — run these directly from any shell:
 
-- `scripts/heal.sh` — one-shot auto-fix for the most common gateway issues
-- `scripts/check-update.sh` — detects version changes and explains what config broke and why
-- `scripts/watchdog.sh` — runs every 5 minutes, restarts gateway if down, escalates after 3 failures
-- `scripts/watchdog-install.sh` — installs the watchdog as a macOS LaunchAgent (survives reboots)
-- `scripts/health-check.sh` — declarative URL/process health checks for gateway-adjacent dependencies
-- `scripts/security-scan.sh` — config hardening and credential exposure scan with redacted findings
-- `scripts/skill-audit.sh` — static audit for third-party skills before installation
+| Script | What it does |
+|--------|-------------|
+| `scripts/heal.sh` | One-shot auto-fix for the most common gateway issues |
+| `scripts/fix-cli-backend.sh` | Fixes the wizard bug that silently breaks Claude CLI model dispatch |
+| `scripts/check-update.sh` | Detects version changes and explains what config broke and why |
+| `scripts/watchdog.sh` | Runs every 5 min, restarts gateway if down, escalates after 3 failures |
+| `scripts/watchdog-install.sh` | Installs the watchdog as a macOS LaunchAgent (survives reboots) |
+| `scripts/health-check.sh` | Declarative URL/process health checks for gateway-adjacent dependencies |
+| `scripts/security-scan.sh` | Config hardening and credential exposure scan with redacted findings |
+| `scripts/skill-audit.sh` | Static audit for third-party skills before installation |
 
 ## Install
 
@@ -86,7 +94,7 @@ bash scripts/heal.sh
 | Tool | Required for |
 |------|-------------|
 | `openclaw` | everything |
-| `python3` | heal.sh, check-update.sh, watchdog.sh |
+| `python3` | heal.sh, fix-cli-backend.sh, check-update.sh, watchdog.sh |
 | `curl` | watchdog.sh HTTP health check |
 | `openssl` | heal.sh auth token generation |
 | `launchctl` + macOS | watchdog-install.sh (LaunchAgent) |
@@ -111,6 +119,9 @@ openclaw --version
 # Run a one-time heal pass — fixes the most common issues immediately
 bash scripts/heal.sh
 
+# Fix Claude CLI backend dispatch (run this if agents are silently falling back to other providers)
+bash scripts/fix-cli-backend.sh
+
 # Check if a recent update broke your config
 bash scripts/check-update.sh        # report only
 bash scripts/check-update.sh --fix  # report + auto-fix
@@ -132,9 +143,10 @@ bash scripts/health-check.sh --verbose
 
 ## Notes
 
-- `health-check.sh` can fail immediately after `openclaw update` or `openclaw gateway restart` if your process target requires a minimum uptime such as `300` seconds. That is expected. Lower the threshold during smoke tests, then restore it for steady-state monitoring.
+- `health-check.sh` can fail immediately after `openclaw update` or `openclaw gateway restart` if your process target requires a minimum uptime such as `300` seconds. That is expected — lower the threshold during smoke tests, then restore it for steady-state monitoring.
 - `security-scan.sh` reports file paths and line numbers for suspected secrets, but it redacts the secret values themselves.
 - `check-update.sh` is intended for real post-upgrade triage. It is normal for it to report a version change the first time it runs after an upgrade.
+- `fix-cli-backend.sh` is idempotent — safe to re-run. After fixing, the `startup model warmup failed` warning in `gateway.err.log` is expected and non-fatal.
 
 ## Watchdog escalation model
 
