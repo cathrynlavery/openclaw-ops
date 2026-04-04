@@ -29,7 +29,6 @@ This skill ships executable scripts for automated repair and continuous monitori
 | `scripts/health-check.sh` | Declarative URL/process checks for gateway-adjacent services and workers |
 | `scripts/skill-audit.sh` | Pre-install security vetting: scan skills for secrets, injection, dangerous commands |
 | `scripts/security-scan.sh` | Config hardening compliance check (0-100 score), drift detection, credential scan |
-| `scripts/fix-cli-backend.sh` | Fix Claude CLI subprocess backend config (wizard sets wrong key, silently fails) |
 
 ### Quick setup
 
@@ -390,49 +389,6 @@ openclaw models auth setup-token --provider kilocode
 openclaw models auth setup-token --provider moonshot
 ```
 
-### Configure Claude CLI as Subprocess Backend
-
-Use this when you want agents to call Claude through the local CLI (using your Max subscription) instead of API keys. The onboarding wizard (`models auth login --provider anthropic --method cli`) has a known bug: it sets the `cliBackends` key to `"claude"` instead of `"claude-cli"`, which silently fails because model IDs use the `claude-cli/` prefix.
-
-**Symptoms:** `FailoverError: Unknown model: claude-cli/claude-sonnet-4-6`, agents silently falling back to other providers, `startup model warmup failed for claude-cli/...`
-
-**Quick fix:**
-```bash
-bash scripts/fix-cli-backend.sh
-```
-
-**What the script checks and fixes:**
-1. Claude CLI is authenticated (`claude auth status` — needs `apiProvider: "firstParty"`)
-2. `~/.openclaw/auth-profiles.json` has an `anthropic:claude-cli` profile with `type: "claude-cli"`
-3. `~/.openclaw/openclaw.json` has `agents.defaults.cliBackends` with key `"claude-cli"` (not `"claude"`)
-4. No `claude-cli` entry exists in `models.providers` (CLI is a subprocess, not an HTTP provider — adding it there creates a broken API path that bypasses the subprocess)
-5. No agent-level `models.json` files have a `claude-cli` provider block
-6. No agent-level `auth-profiles.json` files have `claude-cli:default` profiles or usage stats
-
-**Key concept:** `claude-cli` is a **subprocess backend**, not an API provider. The gateway spawns `claude -p --output-format stream-json ...` as a child process. The CLI handles its own authentication via your Max subscription. Never add `claude-cli` to `models.providers` — that tells the gateway to make HTTP requests to it, which fails.
-
-**The correct `cliBackends` config:**
-```json
-{
-  "agents": {
-    "defaults": {
-      "cliBackends": {
-        "claude-cli": {
-          "command": "claude",
-          "args": ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"],
-          "output": "jsonl",
-          "modelArg": "--model",
-          "sessionArg": "--session-id",
-          "serialize": true
-        }
-      }
-    }
-  }
-}
-```
-
-**Note:** After fixing, you'll see a non-fatal `startup model warmup failed` warning in `gateway.err.log`. This is expected — the warmup uses static model resolution which doesn't check CLI backends. The runtime dispatch path correctly uses `isCliProvider()` which reads from `cliBackends` config.
-
 ## Error Patterns
 
 | Error | Cause | Fix |
@@ -448,9 +404,6 @@ bash scripts/fix-cli-backend.sh
 | `WebSocket 1005/1006` | Discord resume logic failure (v2026.2.24) | `openclaw gateway restart` |
 | `exec.approval.waitDecision` timeout | Named agent has empty allowlist shadowing `*` wildcard | `openclaw approvals allowlist add --agent <name> "*"` then restart |
 | `/approve <id> allow-always` from agent | Exec approval gate blocking agent commands | Fix allowlists (see Section 3 above) |
-| `Unknown model: claude-cli/...` | cliBackends key is `"claude"` instead of `"claude-cli"` | `bash scripts/fix-cli-backend.sh` |
-| `startup model warmup failed for claude-cli/...` | Non-fatal: static warmup doesn't check CLI backends | Expected after CLI backend setup — no action needed |
-| Agents silently falling back to other providers | Missing cliBackends config or wrong key name | `bash scripts/fix-cli-backend.sh` |
 
 ## Security Operations
 
