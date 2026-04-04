@@ -1,5 +1,8 @@
 # openclaw-ops
 
+![](assets/lobster-coding.gif)
+
+
 OpenClaw updates break things. Gateway goes down, exec approvals start blocking your agents, config fields get reset by new defaults — and none of it announces itself. You just notice your agents have gone quiet.
 
 This is the ops layer I built to handle that. It keeps the gateway healthy, auto-repairs the most common breakages, and tells you exactly what changed when an update rolls through. I give it to every agent environment I run.
