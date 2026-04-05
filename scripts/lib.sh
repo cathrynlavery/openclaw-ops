@@ -97,6 +97,59 @@ with open(f, 'w') as out:
 }
 
 # ── Platform helpers ────────────────────────────────────────────────────────
+# Current time in epoch seconds
+epoch_now() {
+  python3 -c "import time; print(int(time.time()))" 2>/dev/null
+}
+
+# Current UTC timestamp in ISO-8601 form
+iso_now() {
+  python3 -c "from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))" 2>/dev/null
+}
+
+# Redact common credential patterns from stdin
+sanitize_sensitive() {
+  python3 -c '
+import re
+import sys
+
+text = sys.stdin.read()
+patterns = [
+    (re.compile(r"sk-[A-Za-z0-9-]{20,}"), "[REDACTED_API_KEY]"),
+    (re.compile(r"xoxb-[0-9A-Za-z-]+"), "[REDACTED_SLACK_TOKEN]"),
+    (re.compile(r"ghp_[A-Za-z0-9]{36,}"), "[REDACTED_GH_TOKEN]"),
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED_AWS_KEY]"),
+    (re.compile(r"Bearer\s+[A-Za-z0-9._-]{20,}", re.IGNORECASE), "Bearer [REDACTED]"),
+    (
+        re.compile(
+            r"(\"(?:password|secret|token|api_key|apiKey|auth_token)\"\s*:\s*\")([^\"]+)(\")",
+            re.IGNORECASE,
+        ),
+        r"\1[REDACTED]\3",
+    ),
+]
+
+for pattern, replacement in patterns:
+    text = pattern.sub(replacement, text)
+
+sys.stdout.write(text)
+' 2>/dev/null
+}
+
+# Run inline Python and surface the first error line through the standard logger
+run_python() {
+  local script="$1"
+  shift || true
+
+  local output
+  if ! output=$(python3 -c "$script" "$@" 2>&1); then
+    log_error "Python script failed: ${output%%$'\n'*}"
+    return 1
+  fi
+
+  printf '%s\n' "$output"
+}
+
 # File modification time in epoch seconds (cross-platform)
 file_mtime() {
   local file="$1"
@@ -125,6 +178,26 @@ from datetime import datetime, timedelta
 import sys
 print((datetime.now() - timedelta(days=int(sys.argv[1]))).strftime('%Y-%m-%d'))
 " "$days" 2>/dev/null
+}
+
+# ── Gateway port resolution ────────────────────────────────────────────────
+# Reads the gateway port from ~/.openclaw/openclaw.json.
+# Precedence: OPENCLAW_GATEWAY_PORT env var → config file → 18789 fallback.
+# Usage: GATEWAY_PORT=$(get_gateway_port)
+get_gateway_port() {
+  if [[ -n "${OPENCLAW_GATEWAY_PORT:-}" ]]; then
+    echo "$OPENCLAW_GATEWAY_PORT"
+    return
+  fi
+  python3 -c "
+import json, sys, os
+try:
+    cfg = os.path.expanduser('~/.openclaw/openclaw.json')
+    d = json.load(open(cfg))
+    print(d.get('gateway', {}).get('port', 18789))
+except:
+    print(18789)
+" 2>/dev/null || echo 18789
 }
 
 # ── SHA-256 hash (cross-platform) ──────────────────────────────────────────

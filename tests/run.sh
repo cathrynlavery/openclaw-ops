@@ -20,6 +20,12 @@ assert_not_contains() {
   [[ "$haystack" != *"$needle"* ]] || fail "expected output to not contain: $needle"
 }
 
+assert_eq() {
+  local actual="$1"
+  local expected="$2"
+  [[ "$actual" == "$expected" ]] || fail "expected [$expected], got [$actual]"
+}
+
 setup_fake_env() {
   TEST_ROOT="$(mktemp -d)"
   export TEST_ROOT
@@ -57,6 +63,8 @@ case "${1:-}" in
     fi
     ;;
   system)
+    mkdir -p "$HOME/.openclaw/logs"
+    printf '%s\n' "$*" >>"$HOME/.openclaw/logs/system-events.log"
     exit 0
     ;;
   doctor|gateway|cron|approvals)
@@ -132,6 +140,14 @@ else
 fi
 EOF
   chmod +x "$TEST_ROOT/bin/ps"
+}
+
+install_fixture() {
+  local agent="$1"
+  local fixture="$2"
+  local target_name="${3:-$fixture}"
+  mkdir -p "$HOME/.openclaw/agents/$agent/sessions"
+  cp "$ROOT_DIR/tests/fixtures/$fixture" "$HOME/.openclaw/agents/$agent/sessions/$target_name"
 }
 
 teardown_fake_env() {
@@ -255,6 +271,171 @@ EOF
   assert_not_contains "$output" "sk-ant-oat01-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 }
 
+test_lib_time_and_sanitization_helpers() {
+  local output
+  output="$(
+    source "$ROOT_DIR/scripts/lib.sh"
+    epoch="$(epoch_now)"
+    iso="$(iso_now)"
+    sample='sk-1234567890abcdefghijklmn xoxb-123456789012-abcdef ghp_123456789012345678901234567890123456 AKIAABCDEFGHIJKLMNOP Bearer abcdefghijklmnopqrstuvwxyz123456 {"password":"secret","api_key":"value"}'
+    sanitized="$(printf '%s\n' "$sample" | sanitize_sensitive)"
+    printf 'epoch=%s\niso=%s\nsanitized=%s\n' "$epoch" "$iso" "$sanitized"
+  )"
+
+  assert_contains "$output" "epoch="
+  assert_contains "$output" "iso="
+  assert_contains "$output" "[REDACTED_API_KEY]"
+  assert_contains "$output" "[REDACTED_SLACK_TOKEN]"
+  assert_contains "$output" "[REDACTED_GH_TOKEN]"
+  assert_contains "$output" "[REDACTED_AWS_KEY]"
+  assert_contains "$output" "Bearer [REDACTED]"
+  assert_contains "$output" "\"password\":\"[REDACTED]\""
+  assert_contains "$output" "\"api_key\":\"[REDACTED]\""
+}
+
+test_incident_lifecycle_and_dedup() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  local output
+  output="$(
+    source "$ROOT_DIR/scripts/lib.sh"
+    source "$ROOT_DIR/scripts/incident-manager.sh"
+
+    incident_report "agent:knox:retry-loop:exec" "warning" "Retry loop: knox calling exec 7 times" '{"agent":"knox","tool":"exec","count":7,"session_id":"sess-alpha"}'
+    incident_report "agent:knox:retry-loop:exec" "warning" "Retry loop: knox calling exec 8 times" '{"agent":"knox","tool":"exec","count":8,"session_id":"sess-beta"}'
+    incident_list --json
+    incident_resolve "agent:knox:retry-loop:exec"
+    incident_report "agent:knox:retry-loop:exec" "warning" "Retry loop should stay cooled down" '{"agent":"knox","tool":"exec","count":9,"session_id":"sess-gamma"}'
+    printf '\n---\n'
+    incident_list --json
+  )"
+
+  assert_contains "$output" "\"dedupeKey\": \"agent:knox:retry-loop:exec\""
+  assert_contains "$output" "\"eventCount\": 2"
+  assert_contains "$output" "\"relatedSessions\": ["
+  assert_contains "$output" "sess-alpha"
+  assert_contains "$output" "sess-beta"
+  assert_contains "$output" "\"status\": \"resolved\""
+  assert_not_contains "$output" "sess-gamma"
+}
+
+test_session_monitor_detects_retry_loops_and_writes_latest_json() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  install_fixture "knox" "session-retry-loop.jsonl"
+  install_fixture "atlas" "session-normal.jsonl"
+
+  bash "$ROOT_DIR/scripts/session-monitor.sh" --no-alert >/dev/null
+
+  local latest_json
+  latest_json="$(cat "$HOME/.openclaw/session-monitor/latest.json")"
+  assert_contains "$latest_json" "\"dedupeKey\": \"agent:knox:retry-loop:exec\""
+  assert_not_contains "$latest_json" "\"dedupeKey\": \"agent:atlas:retry-loop:exec\""
+
+  local incidents
+  incidents="$(cat "$HOME/.openclaw/logs/incidents-state.json")"
+  assert_contains "$incidents" "\"dedupeKey\": \"agent:knox:retry-loop:exec\""
+}
+
+test_session_monitor_detects_stuck_runs() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  install_fixture "atlas" "session-stuck.jsonl"
+  touch "$HOME/.openclaw/agents/atlas/sessions/session-stuck.jsonl"
+
+  bash "$ROOT_DIR/scripts/session-monitor.sh" --no-alert >/dev/null
+
+  local latest_json
+  latest_json="$(cat "$HOME/.openclaw/session-monitor/latest.json")"
+  assert_contains "$latest_json" "\"dedupeKey\": \"agent:atlas:stuck-run:_\""
+  assert_contains "$latest_json" "\"severity\": \"critical\""
+}
+
+test_watchdog_throttles_session_monitor_invocation() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  cat >"$ROOT_DIR/tests/.session-monitor-stub.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'tick\n' >>"${SESSION_MONITOR_STUB_LOG:?}"
+EOF
+  chmod +x "$ROOT_DIR/tests/.session-monitor-stub.sh"
+
+  export CURL_HTTP_STATUS=200
+  export SESSION_MONITOR_STUB_LOG="$HOME/.openclaw/logs/session-monitor-stub.log"
+  export OPENCLAW_SESSION_MONITOR_SCRIPT="$ROOT_DIR/tests/.session-monitor-stub.sh"
+
+  bash "$ROOT_DIR/scripts/watchdog.sh" >/dev/null
+  bash "$ROOT_DIR/scripts/watchdog.sh" >/dev/null
+
+  local count
+  count="$(wc -l <"$SESSION_MONITOR_STUB_LOG" | tr -d ' ')"
+  assert_eq "$count" "1"
+
+  rm -f "$ROOT_DIR/tests/.session-monitor-stub.sh"
+}
+
+test_session_search_sanitizes_and_handles_corruption() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  install_fixture "atlas" "session-with-secrets.jsonl"
+  install_fixture "atlas" "session-corrupted.jsonl"
+
+  local output
+  output="$(bash "$ROOT_DIR/scripts/session-search.sh" "sk-" --limit 5 2>&1)"
+  assert_contains "$output" "[REDACTED_API_KEY]"
+  assert_not_contains "$output" "sk-1234567890abcdefghijklmn"
+
+  local corrupted
+  corrupted="$(bash "$ROOT_DIR/scripts/session-search.sh" "malformed" --limit 5 2>&1)"
+  assert_contains "$corrupted" "sess-corrupted"
+}
+
+test_session_resume_uses_compaction_and_detects_failure() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  install_fixture "knox" "session-retry-loop.jsonl"
+
+  local resume_file
+  resume_file="$HOME/.openclaw/agents/knox/sessions/session-retry-loop.jsonl"
+
+  local output
+  output="$(bash "$ROOT_DIR/scripts/session-resume.sh" "$resume_file" 2>&1)"
+  assert_contains "$output" "## Session Resume: sess-retry"
+  assert_contains "$output" "### Session Context (from compaction)"
+  assert_contains "$output" "Goal: restore a failing OpenClaw worker."
+  assert_contains "$output" "### Point of Failure"
+  assert_contains "$output" "permission denied"
+}
+
+test_daily_digest_summarizes_incidents_activity_and_watchdog() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  install_fixture "knox" "session-normal.jsonl"
+
+  printf '[2026-04-04 09:00:00] Gateway healthy (HTTP 200)\n' >"$HOME/.openclaw/logs/watchdog.log"
+  printf '[2026-04-04 09:05:00] Running session monitor\n' >>"$HOME/.openclaw/logs/watchdog.log"
+
+  bash -lc "source '$ROOT_DIR/scripts/lib.sh'; source '$ROOT_DIR/scripts/incident-manager.sh'; incident_report 'agent:knox:retry-loop:exec' 'warning' 'Retry loop: knox calling exec 7 times' '{\"agent\":\"knox\",\"tool\":\"exec\",\"count\":7,\"session_id\":\"sess-normal\"}'"
+
+  local output
+  output="$(bash "$ROOT_DIR/scripts/daily-digest.sh" --hours 48 2>&1)"
+  assert_contains "$output" "Incident Summary"
+  assert_contains "$output" "Retry loop: knox calling exec 7 times"
+  assert_contains "$output" "Agent Activity"
+  assert_contains "$output" "knox"
+  assert_contains "$output" "Watchdog Events"
+  assert_contains "$output" "Running session monitor"
+  assert_contains "$output" "Cost Summary"
+}
+
 run_test() {
   local name="$1"
   printf 'Running %s\n' "$name"
@@ -269,5 +450,12 @@ run_test test_get_openclaw_version_normalizes_missing_v_prefix
 run_test test_health_check_passes_for_valid_targets
 run_test test_health_check_falls_back_to_etime_on_macos
 run_test test_security_scan_redacts_secret_values
-
+run_test test_lib_time_and_sanitization_helpers
+run_test test_incident_lifecycle_and_dedup
+run_test test_session_monitor_detects_retry_loops_and_writes_latest_json
+run_test test_session_monitor_detects_stuck_runs
+run_test test_watchdog_throttles_session_monitor_invocation
+run_test test_session_search_sanitizes_and_handles_corruption
+run_test test_session_resume_uses_compaction_and_detects_failure
+run_test test_daily_digest_summarizes_incidents_activity_and_watchdog
 printf 'All openclaw-ops tests passed\n'

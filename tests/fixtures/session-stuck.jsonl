@@ -1,0 +1,7 @@
+{"type":"session","version":3,"id":"sess-stuck","timestamp":"2026-04-04T11:00:00Z","cwd":"/tmp/stuck-run"}
+{"type":"compaction","summary":"Goal: debug a hanging OpenClaw task.\nConstraints: do not kill the worker until the hang is confirmed.\nKey decisions: inspect the most recent tool call and heartbeat timestamps before restarting anything."}
+{"type":"message","id":"t1","timestamp":"2026-04-04T11:05:00Z","message":{"role":"user","content":[{"type":"text","text":"The agent looks hung. Find the last useful action."}]}}
+{"type":"message","id":"t2","timestamp":"2026-04-04T11:06:00Z","message":{"role":"assistant","content":[{"type":"text","text":"I’m checking the most recent heartbeat and tool activity."}]}}
+{"type":"message","id":"t3","timestamp":"2026-04-04T11:10:00Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-stuck-1","name":"exec","arguments":{"cmd":"tail -20 ~/.openclaw/logs/watchdog.log"}}]}}
+{"type":"message","id":"t4","timestamp":"2026-04-04T11:10:03Z","message":{"role":"toolResult","toolCallId":"tc-stuck-1","toolName":"exec","content":[{"type":"text","text":"last heartbeat 45 minutes ago"}],"isError":false,"details":{"status":"completed"}}}
+{"type":"message","id":"t5","timestamp":"2026-04-04T11:15:00Z","message":{"role":"assistant","content":[{"type":"text","text":"The last useful action completed, but the session never made forward progress afterward."}]}}

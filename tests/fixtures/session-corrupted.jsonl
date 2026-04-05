@@ -1,0 +1,8 @@
+{"type":"session","version":3,"id":"sess-corrupted","timestamp":"2026-04-04T16:00:00Z","cwd":"/tmp/corrupted"}
+
+this is not json
+{"type":"message","id":"c1","timestamp":"2026-04-04T16:00:10Z","message":{"role":"user","content":[{"type":"text","text":"Search should survive malformed lines."}]}}
+{"type":"message","id":"c2","timestamp":"2026-04-04T16:00:20Z","message":{"role":"assistant","content":[{"type":"text","text":"The parser should skip bad lines and keep going."}]}}
+{"type":"message","id":"c3","timestamp":"2026-04-04T16:00:30Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-corrupt-1","name":"exec","arguments":{"cmd":"echo malformed"}}]}}
+{"type":"message","id":"c4","timestamp":"2026-04-04T16:00:40Z","message":{"role":"toolResult","toolCallId":"tc-corrupt-1","toolName":"exec","content":[{"type":"text","text":"ok"}],"isError":false,"details":{"status":"completed"}}
+{"type":"message","id":"c5","timestamp":"2026-04-04T16:00:50Z","message":{"role":"assistant","content":[{"type":"text","text":"Even with broken JSON nearby, this line should stay searchable."}]}}

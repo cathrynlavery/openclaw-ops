@@ -27,8 +27,14 @@ This skill ships executable scripts for automated repair and continuous monitori
 | `scripts/watchdog-uninstall.sh` | Remove the LaunchAgent |
 | `scripts/check-update.sh` | Detect version changes, explain breaking changes, auto-fix with `--fix` |
 | `scripts/health-check.sh` | Declarative URL/process checks for gateway-adjacent services and workers |
+| `scripts/session-monitor.sh` | Behavioral checks over live session JSONL files; writes incidents + `latest.json` |
+| `scripts/session-search.sh` | Fast full-text session search with structured output and default secret redaction |
+| `scripts/session-resume.sh` | Compaction-first markdown resume for a single session, including failure context |
+| `scripts/daily-digest.sh` | Incident, activity, watchdog, and cost summary for the last N hours |
+| `scripts/incident-manager.sh` | Sourced incident lifecycle helper used by session-monitor and other ops scripts |
 | `scripts/skill-audit.sh` | Pre-install security vetting: scan skills for secrets, injection, dangerous commands |
 | `scripts/security-scan.sh` | Config hardening compliance check (0-100 score), drift detection, credential scan |
+| `scripts/fix-cli-backend.sh` | Fix Claude CLI subprocess backend config (wizard sets wrong key, silently fails) |
 
 ### Quick setup
 
@@ -65,6 +71,51 @@ The watchdog follows a 3-tier escalation:
 Every heal run appends a JSONL record to `~/.openclaw/logs/heal-incidents.jsonl` so recurring issues become visible over time.
 
 When suggesting scripts to users, always show the correct path relative to wherever this skill is installed (e.g., `~/.openclaw/skills/openclaw-ops/scripts/`).
+
+## Session Monitoring
+
+Use the session-monitoring tools when the gateway is alive but agents are behaving badly: retrying, hanging, auth-looping, or producing noisy failures.
+
+### What ships
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/session-monitor.sh` | Scans active `~/.openclaw/agents/*/sessions/*.jsonl` files, detects retry loops / stuck runs / auth errors / error clusters / dead runs, writes `~/.openclaw/session-monitor/latest.json`, and logs incident lifecycle events |
+| `scripts/session-search.sh` | Searches session history with `rg` for speed, then parses matching JSONL lines into structured records; redacts secrets by default |
+| `scripts/session-resume.sh` | Builds a markdown resume for a session using compaction records first, then recent exchange and point-of-failure details |
+| `scripts/daily-digest.sh` | Produces a plain-text digest by default and optional HTML summary for the last N hours |
+| `scripts/incident-manager.sh` | Shared sourced helper that manages incident state at `~/.openclaw/logs/incidents-state.json` and append-only history at `~/.openclaw/logs/incidents.jsonl` |
+
+### Quick start
+
+```bash
+# Run behavioral monitoring once now:
+bash scripts/session-monitor.sh --verbose
+
+# Search recent sessions for auth failures:
+bash scripts/session-search.sh "unauthorized" --limit 10
+
+# Build a resume for one session:
+bash scripts/session-resume.sh ~/.openclaw/agents/knox/sessions/<session>.jsonl
+
+# Generate a 24-hour digest:
+bash scripts/daily-digest.sh --hours 24
+```
+
+### Workflow examples
+
+1. Agent stopped responding
+   `bash scripts/session-search.sh "permission denied" --agent knox`
+   `bash scripts/session-resume.sh ~/.openclaw/agents/knox/sessions/<session>.jsonl`
+   `bash scripts/session-monitor.sh --verbose`
+
+2. Post-incident review
+   `source scripts/incident-manager.sh && incident_list --json`
+   `bash scripts/session-search.sh "retry loop" --agent atlas --limit 20`
+
+3. Capacity planning
+   `bash scripts/daily-digest.sh --hours 24`
+   Review the digest's agent activity and cost summary before changing model defaults or cron frequency.
 
 ## Step 0: Version Gate + Update Change Detection
 
@@ -389,6 +440,49 @@ openclaw models auth setup-token --provider kilocode
 openclaw models auth setup-token --provider moonshot
 ```
 
+### Configure Claude CLI as Subprocess Backend
+
+Use this when you want agents to call Claude through the local CLI (using your Max subscription) instead of API keys. The onboarding wizard (`models auth login --provider anthropic --method cli`) has a known bug: it sets the `cliBackends` key to `"claude"` instead of `"claude-cli"`, which silently fails because model IDs use the `claude-cli/` prefix.
+
+**Symptoms:** `FailoverError: Unknown model: claude-cli/claude-sonnet-4-6`, agents silently falling back to other providers, `startup model warmup failed for claude-cli/...`
+
+**Quick fix:**
+```bash
+bash scripts/fix-cli-backend.sh
+```
+
+**What the script checks and fixes:**
+1. Claude CLI is authenticated (`claude auth status` — needs `apiProvider: "firstParty"`)
+2. `~/.openclaw/auth-profiles.json` has an `anthropic:claude-cli` profile with `type: "claude-cli"`
+3. `~/.openclaw/openclaw.json` has `agents.defaults.cliBackends` with key `"claude-cli"` (not `"claude"`)
+4. No `claude-cli` entry exists in `models.providers` (CLI is a subprocess, not an HTTP provider — adding it there creates a broken API path that bypasses the subprocess)
+5. No agent-level `models.json` files have a `claude-cli` provider block
+6. No agent-level `auth-profiles.json` files have `claude-cli:default` profiles or usage stats
+
+**Key concept:** `claude-cli` is a **subprocess backend**, not an API provider. The gateway spawns `claude -p --output-format stream-json ...` as a child process. The CLI handles its own authentication via your Max subscription. Never add `claude-cli` to `models.providers` — that tells the gateway to make HTTP requests to it, which fails.
+
+**The correct `cliBackends` config:**
+```json
+{
+  "agents": {
+    "defaults": {
+      "cliBackends": {
+        "claude-cli": {
+          "command": "claude",
+          "args": ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions"],
+          "output": "jsonl",
+          "modelArg": "--model",
+          "sessionArg": "--session-id",
+          "serialize": true
+        }
+      }
+    }
+  }
+}
+```
+
+**Note:** After fixing, you'll see a non-fatal `startup model warmup failed` warning in `gateway.err.log`. This is expected — the warmup uses static model resolution which doesn't check CLI backends. The runtime dispatch path correctly uses `isCliProvider()` which reads from `cliBackends` config.
+
 ## Error Patterns
 
 | Error | Cause | Fix |
@@ -404,6 +498,9 @@ openclaw models auth setup-token --provider moonshot
 | `WebSocket 1005/1006` | Discord resume logic failure (v2026.2.24) | `openclaw gateway restart` |
 | `exec.approval.waitDecision` timeout | Named agent has empty allowlist shadowing `*` wildcard | `openclaw approvals allowlist add --agent <name> "*"` then restart |
 | `/approve <id> allow-always` from agent | Exec approval gate blocking agent commands | Fix allowlists (see Section 3 above) |
+| `Unknown model: claude-cli/...` | cliBackends key is `"claude"` instead of `"claude-cli"` | `bash scripts/fix-cli-backend.sh` |
+| `startup model warmup failed for claude-cli/...` | Non-fatal: static warmup doesn't check CLI backends | Expected after CLI backend setup — no action needed |
+| Agents silently falling back to other providers | Missing cliBackends config or wrong key name | `bash scripts/fix-cli-backend.sh` |
 
 ## Security Operations
 

@@ -39,7 +39,7 @@ scan_pattern() {
     if echo "$line" | grep -iqE '(example|template|placeholder|your-|TODO|<\.\.\.>|sample|demo)'; then
       continue
     fi
-    log_warn "  $line"
+    log_warn "  $line" >&2
     ((count++)) || true
   done < <(grep -rnE "$pattern" "${includes[@]}" "$SKILL_DIR" 2>/dev/null || true)
 
@@ -50,7 +50,7 @@ scan_pattern() {
 # 1. Hardcoded secrets
 # ══════════════════════════════════════════════════════════════════════════
 scan_secrets() {
-  log_info "${BLD}[1/5] Scanning for hardcoded secrets...${RST}"
+  log_info "${BLD}[1/5] Scanning for hardcoded secrets...${RST}" >&2
   local count=0
 
   local patterns=(
@@ -73,9 +73,9 @@ scan_secrets() {
   done
 
   if [[ $count -eq 0 ]]; then
-    log_ok "No hardcoded secrets found"
+    log_ok "No hardcoded secrets found" >&2
   else
-    log_error "Found $count hardcoded secret(s)"
+    log_error "Found $count hardcoded secret(s)" >&2
   fi
   echo "$count"
 }
@@ -84,7 +84,7 @@ scan_secrets() {
 # 2. Suspicious network calls
 # ══════════════════════════════════════════════════════════════════════════
 scan_network() {
-  log_info "${BLD}[2/5] Scanning for suspicious network calls...${RST}"
+  log_info "${BLD}[2/5] Scanning for suspicious network calls...${RST}" >&2
   local count=0 n
 
   # curl/wget with file upload or POST data
@@ -107,9 +107,9 @@ scan_network() {
   ((count += n)) || true
 
   if [[ $count -eq 0 ]]; then
-    log_ok "No suspicious network calls found"
+    log_ok "No suspicious network calls found" >&2
   else
-    log_error "Found $count suspicious network call(s)"
+    log_error "Found $count suspicious network call(s)" >&2
   fi
   echo "$count"
 }
@@ -118,7 +118,7 @@ scan_network() {
 # 3. Dangerous shell commands
 # ══════════════════════════════════════════════════════════════════════════
 scan_dangerous() {
-  log_info "${BLD}[3/5] Scanning for dangerous shell commands...${RST}"
+  log_info "${BLD}[3/5] Scanning for dangerous shell commands...${RST}" >&2
   local count=0 n
 
   # chmod 777
@@ -146,9 +146,9 @@ scan_dangerous() {
   ((count += n)) || true
 
   if [[ $count -eq 0 ]]; then
-    log_ok "No dangerous shell commands found"
+    log_ok "No dangerous shell commands found" >&2
   else
-    log_error "Found $count dangerous shell command(s)"
+    log_error "Found $count dangerous shell command(s)" >&2
   fi
   echo "$count"
 }
@@ -157,7 +157,7 @@ scan_dangerous() {
 # 4. Prompt injection in markdown
 # ══════════════════════════════════════════════════════════════════════════
 scan_prompt_injection() {
-  log_info "${BLD}[4/5] Scanning for prompt injection patterns...${RST}"
+  log_info "${BLD}[4/5] Scanning for prompt injection patterns...${RST}" >&2
   local count=0 n
   local md_includes=(--include='*.md' --include='*.txt')
 
@@ -183,9 +183,9 @@ scan_prompt_injection() {
   ((count += n)) || true
 
   if [[ $count -eq 0 ]]; then
-    log_ok "No prompt injection patterns found"
+    log_ok "No prompt injection patterns found" >&2
   else
-    log_error "Found $count prompt injection pattern(s)"
+    log_error "Found $count prompt injection pattern(s)" >&2
   fi
   echo "$count"
 }
@@ -194,14 +194,14 @@ scan_prompt_injection() {
 # 5. File structure validation
 # ══════════════════════════════════════════════════════════════════════════
 scan_structure() {
-  log_info "${BLD}[5/5] Validating file structure...${RST}"
+  log_info "${BLD}[5/5] Validating file structure...${RST}" >&2
   local count=0
 
   if [[ ! -f "$SKILL_DIR/SKILL.md" ]]; then
-    log_warn "  Missing required SKILL.md"
+    log_warn "  Missing required SKILL.md" >&2
     ((count++)) || true
   else
-    log_ok "SKILL.md present"
+    log_ok "SKILL.md present" >&2
   fi
 
   echo "$count"

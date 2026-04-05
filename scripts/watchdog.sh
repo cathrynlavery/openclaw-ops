@@ -10,6 +10,9 @@ require_tools python3 openclaw
 LOG_DIR="${OPENCLAW_LOG_DIR:-$HOME/.openclaw/logs}"
 LOG_FILE="$LOG_DIR/watchdog.log"
 HEAL_SCRIPT="$(cd "$(dirname "$0")" && pwd)/heal.sh"
+SESSION_MONITOR_SCRIPT="${OPENCLAW_SESSION_MONITOR_SCRIPT:-$(cd "$(dirname "$0")" && pwd)/session-monitor.sh}"
+SESSION_MONITOR_STAMP="${OPENCLAW_SESSION_MONITOR_STAMP:-$HOME/.openclaw/session-monitor/watchdog.stamp}"
+SESSION_MONITOR_THROTTLE=600
 MAX_RESTART_ATTEMPTS=3
 RESTART_ATTEMPT_WINDOW=900  # 15 minutes
 STATE_FILE="$HOME/.openclaw/watchdog-state.json"
@@ -81,7 +84,11 @@ attempts = [a for a in d.get('restarts', []) if time.time() - a < window]
 attempts.append(time.time())
 d['restarts'] = attempts
 d['last_restart'] = time.time()
-json.dump(d, open(state_file, 'w'))
+import tempfile, os
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(state_file), suffix='.tmp')
+with os.fdopen(fd, 'w') as f:
+    json.dump(d, f)
+os.replace(tmp, state_file)
 " "$STATE_FILE" "$RESTART_ATTEMPT_WINDOW" 2>/dev/null || true
 }
 
@@ -95,12 +102,39 @@ except:
     d = {}
 d['restarts'] = []
 d['last_ok'] = __import__('time').time()
-json.dump(d, open(state_file, 'w'))
+import tempfile, os
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(state_file), suffix='.tmp')
+with os.fdopen(fd, 'w') as f:
+    json.dump(d, f)
+os.replace(tmp, state_file)
 " "$STATE_FILE" 2>/dev/null || true
 }
 
+maybe_run_session_monitor() {
+  local now stamp_mtime
+
+  [[ -x "$SESSION_MONITOR_SCRIPT" ]] || return 0
+  mkdir -p "$(dirname "$SESSION_MONITOR_STAMP")"
+  now="$(epoch_now)"
+  stamp_mtime="$(file_mtime "$SESSION_MONITOR_STAMP" || true)"
+  stamp_mtime="${stamp_mtime:-0}"
+
+  if (( now - stamp_mtime < SESSION_MONITOR_THROTTLE )); then
+    log "Session monitor throttled"
+    return 0
+  fi
+
+  log "Running session monitor"
+  if bash "$SESSION_MONITOR_SCRIPT" --no-alert >>"$LOG_FILE" 2>&1; then
+    touch "$SESSION_MONITOR_STAMP"
+  else
+    log "Session monitor failed"
+    touch "$SESSION_MONITOR_STAMP"
+  fi
+}
+
 # ── Gateway health check ──────────────────────────────────────────────────────
-GATEWAY_PORT="${OPENCLAW_GATEWAY_PORT:-18789}"
+GATEWAY_PORT="$(get_gateway_port)"
 GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}/health"
 
 HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 "$GATEWAY_URL" 2>/dev/null || echo "000")
@@ -109,6 +143,7 @@ if [[ "$HTTP_STATUS" == "200" ]] || [[ "$HTTP_STATUS" == "401" ]]; then
   # 401 = gateway is up, auth token required (expected in normal operation)
   log "Gateway healthy (HTTP $HTTP_STATUS)"
   clear_restarts
+  maybe_run_session_monitor
   exit 0
 fi
 
@@ -148,6 +183,7 @@ if [[ "$HTTP_STATUS_AFTER" == "200" ]] || [[ "$HTTP_STATUS_AFTER" == "401" ]]; t
   if command -v osascript &>/dev/null; then
     osascript -e 'display notification "OpenClaw gateway restarted successfully." with title "OpenClaw Watchdog" subtitle "Recovered"' 2>/dev/null || true
   fi
+  maybe_run_session_monitor
   exit 0
 fi
 
@@ -164,6 +200,7 @@ HTTP_FINAL=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 "$GATEWAY_URL"
 if [[ "$HTTP_FINAL" == "200" ]] || [[ "$HTTP_FINAL" == "401" ]]; then
   log "Gateway recovered after heal.sh"
   clear_restarts
+  maybe_run_session_monitor
   exit 0
 else
   log "Gateway still down after heal.sh (HTTP $HTTP_FINAL)"

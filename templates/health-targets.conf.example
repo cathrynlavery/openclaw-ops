@@ -1,5 +1,15 @@
-# URL targets
-url|gateway|http://127.0.0.1:18789/health
+# health-targets.conf — targets file for scripts/health-check.sh
+#
+# TIP: Running `bash scripts/health-check.sh` with no targets file will
+# auto-generate this file with the correct gateway port read from
+# ~/.openclaw/openclaw.json. You only need to copy/edit this manually
+# if you want to add custom targets.
+#
+# Get your gateway port:
+#   python3 -c "import json; d=json.load(open('$HOME/.openclaw/openclaw.json')); print(d.get('gateway',{}).get('port',18789))"
+
+# URL targets  (replace <PORT> with your actual gateway port)
+url|gateway|http://127.0.0.1:<PORT>/health
 
 # Process targets
 process|gateway|openclaw-gateway|300
