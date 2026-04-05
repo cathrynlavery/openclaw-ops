@@ -178,6 +178,19 @@ install_fixture() {
   cp "$ROOT_DIR/tests/fixtures/$fixture" "$HOME/.openclaw/agents/$agent/sessions/$target_name"
 }
 
+set_file_mtime() {
+  local file="$1"
+  local epoch="$2"
+  python3 - "$file" "$epoch" <<'PY'
+import os
+import sys
+
+path = sys.argv[1]
+epoch = int(float(sys.argv[2]))
+os.utime(path, (epoch, epoch))
+PY
+}
+
 setup_post_update_stub_dir() {
   POST_UPDATE_STUB_DIR="$TEST_ROOT/post-update-stubs"
   mkdir -p "$POST_UPDATE_STUB_DIR"
@@ -273,6 +286,8 @@ test_security_scan_detects_nested_files_and_permissions() {
   trap teardown_fake_env RETURN
 
   mkdir -p "$HOME/.openclaw/nested/a/b"
+  local global_systemd_dir="$HOME/.openclaw-systemd-global"
+  mkdir -p "$global_systemd_dir/nested/system"
 
   cat >"$HOME/.openclaw/nested/a/b/deep-secret.jsonl" <<'EOF'
 {"token":"sk-1234567890abcdefghijklmn"}
@@ -285,13 +300,24 @@ Description=Deep worker
 Environment=OPENCLAW_GATEWAY_TOKEN=sk-1234567890abcdefghijklmn
 EOF
 
+  cat >"$global_systemd_dir/nested/system/global-worker.service" <<'EOF'
+[Unit]
+Description=Global worker
+[Service]
+Environment=OPENCLAW_GATEWAY_TOKEN=sk-1234567890abcdefghijklmn
+EOF
+
   chmod 777 "$HOME/.openclaw/nested/a/b/deep-secret.jsonl"
   chmod 777 "$HOME/.openclaw/nested/a/b/deep-worker.service"
+  chmod 777 "$global_systemd_dir/nested/system/global-worker.service"
+
+  export OPENCLAW_SECURITY_SCAN_SYSTEMD_DIRS="$global_systemd_dir"
 
   local output
   output="$(bash "$ROOT_DIR/scripts/security-scan.sh" 2>&1)"
   assert_contains "$output" "deep-secret.jsonl"
   assert_contains "$output" "deep-worker.service"
+  assert_contains "$output" "global-worker.service"
   assert_contains "$output" "has permissions"
 }
 
@@ -508,6 +534,28 @@ test_session_monitor_detects_stuck_runs() {
   assert_contains "$latest_json" "\"severity\": \"critical\""
 }
 
+test_session_monitor_ignores_stale_stuck_runs() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  install_fixture "atlas" "session-stuck.jsonl"
+
+  local session_file="$HOME/.openclaw/agents/atlas/sessions/session-stuck.jsonl"
+  local stale_epoch
+  stale_epoch="$(python3 - <<'PY'
+from time import time
+print(int(time()) - 172800)
+PY
+)"
+  set_file_mtime "$session_file" "$stale_epoch"
+
+  bash "$ROOT_DIR/scripts/session-monitor.sh" --no-alert >/dev/null
+
+  local latest_json
+  latest_json="$(cat "$HOME/.openclaw/session-monitor/latest.json")"
+  assert_not_contains "$latest_json" "\"dedupeKey\": \"agent:atlas:stuck-run:_\""
+}
+
 test_session_monitor_detects_auth_errors_and_error_clusters_in_long_sessions() {
   setup_fake_env
   trap teardown_fake_env RETURN
@@ -645,6 +693,7 @@ run_test test_lib_time_and_sanitization_helpers
 run_test test_incident_lifecycle_and_dedup
 run_test test_session_monitor_detects_retry_loops_and_writes_latest_json
 run_test test_session_monitor_detects_stuck_runs
+run_test test_session_monitor_ignores_stale_stuck_runs
 run_test test_session_monitor_detects_auth_errors_and_error_clusters_in_long_sessions
 run_test test_watchdog_throttles_session_monitor_invocation
 run_test test_session_search_sanitizes_and_handles_corruption

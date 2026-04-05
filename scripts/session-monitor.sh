@@ -71,8 +71,11 @@ analyze_file() {
   local file="$1"
   local now_epoch
   now_epoch="$(epoch_now)"
+  local file_mtime_epoch
+  file_mtime_epoch="$(file_mtime "$file" || true)"
+  file_mtime_epoch="${file_mtime_epoch:-0}"
 
-  python3 - "$file" "$now_epoch" <<'PY'
+  python3 - "$file" "$now_epoch" "$file_mtime_epoch" <<'PY'
 import json
 import os
 import re
@@ -81,6 +84,7 @@ from datetime import datetime, timezone
 
 path = sys.argv[1]
 now_epoch = int(float(sys.argv[2] or 0))
+file_mtime_epoch = int(float(sys.argv[3] or 0))
 
 
 def parse_epoch(value):
@@ -151,6 +155,7 @@ current_streak = 0
 
 auth_pattern = re.compile(r"401|403|unauthorized|forbidden|token.{0,20}expired", re.IGNORECASE)
 error_pattern = re.compile(r"error:|failed|traceback|permission denied|cannot proceed|unable to|i apologize", re.IGNORECASE)
+stale_session_window = 86400
 
 for record in records:
     if record.get("type") == "message":
@@ -229,7 +234,7 @@ if header_timestamp and now_epoch - header_timestamp > 600 and effective_last an
         {"agent": agent, "meaningful_assistant_messages": meaningful_assistant_count, "session_id": session_id, "session_path": path},
     )
 
-if last_activity and now_epoch - last_activity > 1800 and meaningful_assistant_count >= 1:
+if file_mtime_epoch and now_epoch - file_mtime_epoch <= stale_session_window and last_activity and now_epoch - last_activity > 1800 and meaningful_assistant_count >= 1:
     emit(
         agent,
         "stuck-run",
@@ -238,6 +243,8 @@ if last_activity and now_epoch - last_activity > 1800 and meaningful_assistant_c
         f"Stuck run: {agent} session stopped progressing",
         {
             "agent": agent,
+            "file_mtime_epoch": file_mtime_epoch,
+            "file_mtime_age_seconds": now_epoch - file_mtime_epoch,
             "last_activity_epoch": last_activity,
             "last_activity_age_seconds": now_epoch - last_activity,
             "session_id": session_id,

@@ -234,10 +234,12 @@ run_credentials() {
   local CRED_ISSUES=0
   local CONFIG_DIR="$HOME/.openclaw"
   local BACKUP_DIR="$HOME/.openclaw-update-backups"
-  local SYSTEMD_DIR="$HOME/.config/systemd/user"
+  local SYSTEMD_DIRS_ENV="${OPENCLAW_SECURITY_SCAN_SYSTEMD_DIRS:-$HOME/.config/systemd/user:/etc/systemd/system}"
+  local SYSTEMD_DIRS=()
+  IFS=':' read -r -a SYSTEMD_DIRS <<< "$SYSTEMD_DIRS_ENV"
 
   local scan_roots=()
-  for root in "$CONFIG_DIR" "$BACKUP_DIR" "$SYSTEMD_DIR"; do
+  for root in "$CONFIG_DIR" "$BACKUP_DIR" "${SYSTEMD_DIRS[@]}"; do
     [[ -d "$root" ]] && scan_roots+=("$root")
   done
 
