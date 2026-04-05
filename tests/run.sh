@@ -53,6 +53,9 @@ setup_fake_env() {
   export USERPROFILE="$TEST_HOME"
   export PATH="$TEST_ROOT/bin:$PATH"
   mkdir -p "$HOME/.openclaw/logs" "$HOME/.openclaw" "$TEST_ROOT/bin"
+  mkdir -p "$HOME/.config/systemd/user" "$TEST_ROOT/etc/systemd/system"
+  export OPENCLAW_SECURITY_SCAN_SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+  export OPENCLAW_SECURITY_SCAN_SYSTEMD_SYSTEM_DIR="$TEST_ROOT/etc/systemd/system"
 
   cat >"$TEST_ROOT/bin/openclaw" <<'EOF'
 #!/usr/bin/env bash
@@ -181,7 +184,7 @@ install_fixture() {
 set_file_mtime() {
   local file="$1"
   local epoch="$2"
-  python3 - "$file" "$epoch" <<'PY'
+  python - "$file" "$epoch" <<'PY'
 import os
 import sys
 
@@ -311,7 +314,7 @@ EOF
   chmod 777 "$HOME/.openclaw/nested/a/b/deep-worker.service"
   chmod 777 "$global_systemd_dir/nested/system/global-worker.service"
 
-  export OPENCLAW_SECURITY_SCAN_SYSTEMD_DIRS="$global_systemd_dir"
+  export OPENCLAW_SECURITY_SCAN_SYSTEMD_SYSTEM_DIR="$global_systemd_dir"
 
   local output
   output="$(bash "$ROOT_DIR/scripts/security-scan.sh" 2>&1)"
@@ -542,7 +545,7 @@ test_session_monitor_ignores_stale_stuck_runs() {
 
   local session_file="$HOME/.openclaw/agents/atlas/sessions/session-stuck.jsonl"
   local stale_epoch
-  stale_epoch="$(python3 - <<'PY'
+  stale_epoch="$(python - <<'PY'
 from time import time
 print(int(time()) - 172800)
 PY
