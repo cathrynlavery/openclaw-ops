@@ -117,6 +117,58 @@ case "${1:-}" in
     printf '%s\n' "$*" >>"$HOME/.openclaw/logs/system-events.log"
     exit 0
     ;;
+  cron)
+    case "${2:-}" in
+      list)
+        if [[ "${3:-}" == "--json" || "${4:-}" == "--json" ]]; then
+          if [[ -n "${OPENCLAW_CRON_STATE_FILE:-}" && -f "${OPENCLAW_CRON_STATE_FILE:-}" ]]; then
+            cat "$OPENCLAW_CRON_STATE_FILE"
+          else
+            printf '%s\n' "${OPENCLAW_CRON_LIST_JSON:-{\"jobs\":[]}}"
+          fi
+        fi
+        exit 0
+        ;;
+      edit)
+        if [[ -n "${OPENCLAW_CRON_EDIT_LOG:-}" ]]; then
+          printf '%s\n' "$*" >>"$OPENCLAW_CRON_EDIT_LOG"
+        fi
+        if [[ -n "${OPENCLAW_CRON_STATE_FILE:-}" && -f "${OPENCLAW_CRON_STATE_FILE:-}" ]]; then
+          python3 - "$OPENCLAW_CRON_STATE_FILE" "$@" <<'PY'
+import json
+import sys
+
+state_file = sys.argv[1]
+args = sys.argv[2:]
+job_id = args[2]
+light = "--light-context" in args
+thinking = None
+if "--thinking" in args:
+    idx = args.index("--thinking")
+    if idx + 1 < len(args):
+        thinking = args[idx + 1]
+
+with open(state_file, "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+
+jobs = payload.get("jobs", [])
+for job in jobs:
+    if job.get("id") != job_id:
+        continue
+    job.setdefault("payload", {})
+    if light:
+        job["payload"]["lightContext"] = True
+    if thinking is not None:
+        job["payload"]["thinking"] = thinking
+
+with open(state_file, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+PY
+        fi
+        exit 0
+        ;;
+    esac
+    ;;
   doctor|gateway|cron|approvals)
     exit 0
     ;;
@@ -675,6 +727,416 @@ test_session_resume_uses_compaction_and_detects_failure() {
   assert_contains "$output" "permission denied"
 }
 
+test_prompt_truncation_report_handles_latest_session_and_json_output() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  mkdir -p "$HOME/.openclaw/agents/atlas/sessions"
+  mkdir -p "$HOME/.openclaw/agents/scout/sessions"
+  mkdir -p "$HOME/.openclaw/agents/ghost/sessions"
+  mkdir -p "$HOME/.openclaw/agents/empty/sessions"
+  : >"$HOME/.openclaw/agents/atlas/paperclip-claimed-api-key.json"
+  : >"$HOME/.openclaw/agents/scout/paperclip-claimed-api-key.json"
+  : >"$HOME/.openclaw/agents/ghost/paperclip-claimed-api-key.json"
+
+  python3 - "$HOME/.openclaw/agents/atlas/sessions/sessions.json" <<'PY'
+import json
+import sys
+
+payload = {
+    "older-session": {
+        "updatedAt": 1712000000000,
+        "modelProvider": "openai-codex",
+        "systemPromptReport": {
+            "bootstrapTruncation": {
+                "warningShown": False,
+                "truncatedFiles": [],
+                "nearLimitFiles": [],
+                "totalNearLimit": 0,
+            }
+        },
+    },
+    "latest-session": {
+        "updatedAt": 1712100000000,
+        "modelProvider": "openai-codex",
+        "systemPromptReport": {
+            "bootstrapTruncation": {
+                "warningShown": True,
+                "truncatedFiles": [{"path": "AGENTS.md"}],
+                "nearLimitFiles": [{"path": "MEMORY.md"}],
+                "totalNearLimit": 1,
+            }
+        },
+    },
+}
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+PY
+
+  python3 - "$HOME/.openclaw/agents/scout/sessions/sessions.json" <<'PY'
+import json
+import sys
+
+payload = {
+    "sessions": [
+        {
+            "id": "scout-latest",
+            "updatedAt": "2026-04-04T12:00:00Z",
+            "modelProvider": "anthropic",
+            "systemPromptReport": {
+                "bootstrapTruncation": {
+                    "warningShown": False,
+                    "truncatedFiles": [],
+                    "nearLimitFiles": ["SOUL.md"],
+                    "totalNearLimit": 1,
+                }
+            },
+        }
+    ]
+}
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+PY
+
+  printf '{not json}\n' >"$HOME/.openclaw/agents/ghost/sessions/sessions.json"
+
+  local output
+  output="$(bash "$ROOT_DIR/scripts/prompt-truncation-report.sh" 2>&1)"
+  assert_contains "$output" "Bootstrap truncation warnings found in 2 of 3 checked agents"
+  assert_contains "$output" "atlas (latest-session)"
+  assert_contains "$output" "truncated: AGENTS.md"
+  assert_contains "$output" "near-limit: MEMORY.md"
+  assert_contains "$output" "scout (scout-latest)"
+  assert_contains "$output" "near-limit: SOUL.md"
+  assert_not_contains "$output" "ghost"
+  assert_not_contains "$output" "empty"
+
+  local atlas_json
+  atlas_json="$(bash "$ROOT_DIR/scripts/prompt-truncation-report.sh" --agent atlas --json 2>&1)"
+  assert_contains "$atlas_json" "\"affected_agents\": 1"
+  assert_contains "$atlas_json" "\"agent\": \"atlas\""
+  assert_contains "$atlas_json" "\"session_key\": \"latest-session\""
+  assert_contains "$atlas_json" "\"truncated_count\": 1"
+
+  local empty_json
+  empty_json="$(bash "$ROOT_DIR/scripts/prompt-truncation-report.sh" --agent empty --json 2>&1)"
+  assert_contains "$empty_json" "\"checked_agents\": 1"
+  assert_contains "$empty_json" "\"affected_agents\": 0"
+}
+
+test_cron_optimize_reports_and_fixes_missing_light_context() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  export OPENCLAW_CRON_STATE_FILE="$HOME/.openclaw/cron-state.json"
+  export OPENCLAW_CRON_EDIT_LOG="$HOME/.openclaw/logs/cron-edit.log"
+
+  python3 - "$OPENCLAW_CRON_STATE_FILE" <<'PY'
+import json
+import sys
+
+payload = {
+    "jobs": [
+        {
+            "id": "job-1",
+            "agentId": "atlas",
+            "name": "Atlas morning report",
+            "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "America/Chicago"},
+            "payload": {"kind": "agentTurn", "message": "hi", "lightContext": False},
+        },
+        {
+            "id": "job-2",
+            "agentId": "atlas",
+            "name": "Atlas already optimized",
+            "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "America/Chicago"},
+            "payload": {"kind": "agentTurn", "message": "hi", "lightContext": True, "thinking": "high"},
+        },
+        {
+            "id": "job-3",
+            "agentId": "scout",
+            "name": "Scout no thinking yet",
+            "schedule": {"kind": "cron", "expr": "0 10 * * *", "tz": "America/Chicago"},
+            "payload": {"kind": "agentTurn", "message": "hi", "lightContext": False},
+        },
+        {
+            "id": "job-4",
+            "agentId": "ops",
+            "name": "System event",
+            "schedule": {"kind": "cron", "expr": "0 11 * * *", "tz": "America/Chicago"},
+            "payload": {"kind": "systemEvent", "systemEvent": "noop"},
+        },
+    ]
+}
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+PY
+
+  local output status
+  set +e
+  output="$(bash "$ROOT_DIR/scripts/cron-optimize.sh" 2>&1)"
+  status=$?
+  set -e
+  assert_eq "$status" "1"
+  assert_contains "$output" "agent"
+  assert_contains "$output" "job-1"
+  assert_contains "$output" "job-2"
+  assert_contains "$output" "job-3"
+  assert_contains "$output" "Optimizations available: 2 of 3 agent cron jobs are missing --light-context."
+
+  local atlas_output atlas_status
+  set +e
+  atlas_output="$(bash "$ROOT_DIR/scripts/cron-optimize.sh" --agent atlas 2>&1)"
+  atlas_status=$?
+  set -e
+  assert_eq "$atlas_status" "1"
+  assert_contains "$atlas_output" "job-1"
+  assert_contains "$atlas_output" "job-2"
+  assert_not_contains "$atlas_output" "job-3"
+
+  local fix_output fix_status
+  set +e
+  fix_output="$(bash "$ROOT_DIR/scripts/cron-optimize.sh" --fix --level minimal 2>&1)"
+  fix_status=$?
+  set -e
+  assert_eq "$fix_status" "0"
+  assert_contains "$fix_output" "Applying fixes"
+  assert_contains "$fix_output" "Cron optimized: job-1"
+  assert_contains "$fix_output" "Cron optimized: job-3"
+  assert_contains "$fix_output" "All 3 listed agent cron jobs already use --light-context."
+
+  local edit_log
+  edit_log="$(cat "$OPENCLAW_CRON_EDIT_LOG")"
+  assert_contains "$edit_log" "cron edit job-1 --light-context --thinking minimal"
+  assert_contains "$edit_log" "cron edit job-3 --light-context --thinking minimal"
+  assert_not_contains "$edit_log" "job-2"
+
+  local post_fix
+  post_fix="$(bash "$ROOT_DIR/scripts/cron-optimize.sh" 2>&1)"
+  assert_contains "$post_fix" "All 3 listed agent cron jobs already use --light-context."
+}
+
+test_cron_error_inspector_formats_erroring_jobs() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  export OPENCLAW_CRON_STATE_FILE="$HOME/.openclaw/cron-state.json"
+
+  python3 - "$OPENCLAW_CRON_STATE_FILE" <<'PY'
+import json
+import time
+import sys
+
+now_ms = int(time.time() * 1000)
+payload = {
+    "jobs": [
+        {
+            "id": "job-1",
+            "agentId": "atlas",
+            "name": "Atlas timeout",
+            "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "America/Chicago"},
+            "payload": {
+                "kind": "agentTurn",
+                "message": "A" * 600,
+                "lightContext": False,
+            },
+            "state": {
+                "lastRunAtMs": now_ms - 120000,
+                "lastStatus": "error",
+                "lastRunStatus": "error",
+                "consecutiveErrors": 3,
+                "lastError": "cron: job execution timed out",
+                "lastErrorReason": "timeout",
+            },
+        },
+        {
+            "id": "job-2",
+            "agentId": "atlas",
+            "name": "Atlas healthy",
+            "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "America/Chicago"},
+            "payload": {"kind": "agentTurn", "message": "ok", "lightContext": True},
+            "state": {
+                "lastRunAtMs": now_ms - 60000,
+                "lastStatus": "ok",
+                "lastRunStatus": "ok",
+                "consecutiveErrors": 0,
+            },
+        },
+        {
+            "id": "job-3",
+            "agentId": "scout",
+            "name": "Scout webhook error",
+            "schedule": {"kind": "cron", "expr": "0 10 * * *", "tz": "America/Chicago"},
+            "payload": {"kind": "systemEvent", "systemEvent": "noop"},
+            "state": {
+                "lastRunAtMs": now_ms - 90000,
+                "lastStatus": "error",
+                "lastRunStatus": "error",
+                "consecutiveErrors": 1,
+                "lastError": "webhook delivery failed",
+                "lastErrorReason": "delivery",
+            },
+        },
+    ]
+}
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+PY
+
+  local output
+  output="$(bash "$ROOT_DIR/scripts/cron-error-inspector.sh" 2>&1)"
+  assert_contains "$output" "job-1 | Atlas timeout"
+  assert_contains "$output" "job-3 | Scout webhook error"
+  assert_not_contains "$output" "job-2"
+  assert_contains "$output" "state.lastErrorReason: timeout"
+  assert_contains "$output" "state.lastError: cron: job execution timed out"
+  assert_contains "$output" 'hint: Timeout + missing light-context: consider `openclaw cron edit <id> --light-context`.'
+  assert_contains "$output" "payload: kind=agentTurn | lightContext=False |"
+  assert_not_contains "$output" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+  local filtered
+  filtered="$(bash "$ROOT_DIR/scripts/cron-error-inspector.sh" --agent atlas --consecutive 2 2>&1)"
+  assert_contains "$filtered" "job-1 | Atlas timeout"
+  assert_not_contains "$filtered" "job-3 | Scout webhook error"
+
+  local none
+  none="$(bash "$ROOT_DIR/scripts/cron-error-inspector.sh" --agent scout --consecutive 2 2>&1)"
+  assert_contains "$none" "No erroring cron jobs found for agent scout with consecutiveErrors >= 2."
+}
+
+test_agent_dirs_audit_classifies_and_mutates_candidates() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  mkdir -p "$HOME/.openclaw/agents"
+  cat >"$HOME/.openclaw/openclaw.json" <<'EOF'
+{
+  "agents": {
+    "list": [
+      {"id": "atlas"},
+      {"id": "porter"}
+    ]
+  }
+}
+EOF
+
+  mkdir -p "$HOME/.openclaw/agents/atlas/sessions"
+  mkdir -p "$HOME/.openclaw/agents/orphan-empty/sessions"
+  mkdir -p "$HOME/.openclaw/agents/orphan-dormant/sessions"
+  mkdir -p "$HOME/.openclaw/agents/orphan-dormant/agent"
+  mkdir -p "$HOME/.openclaw/agents/orphan-recent/sessions"
+  mkdir -p "$HOME/.openclaw/agents/scaffold"
+
+  printf '{}' >"$HOME/.openclaw/agents/orphan-dormant/agent/auth-profiles.json"
+  printf 'old session\n' >"$HOME/.openclaw/agents/orphan-dormant/sessions/old.jsonl"
+  printf 'recent session\n' >"$HOME/.openclaw/agents/orphan-recent/sessions/recent.jsonl"
+
+  local now
+  now="$(date +%s)"
+  set_file_mtime "$HOME/.openclaw/agents/orphan-dormant/sessions/old.jsonl" "$((now - 40 * 86400))"
+  set_file_mtime "$HOME/.openclaw/agents/orphan-dormant/agent/auth-profiles.json" "$((now - 40 * 86400))"
+  set_file_mtime "$HOME/.openclaw/agents/orphan-dormant/agent" "$((now - 40 * 86400))"
+  set_file_mtime "$HOME/.openclaw/agents/orphan-dormant/sessions" "$((now - 40 * 86400))"
+  set_file_mtime "$HOME/.openclaw/agents/orphan-dormant" "$((now - 40 * 86400))"
+
+  local output
+  output="$(bash "$ROOT_DIR/scripts/agent-dirs-audit.sh" 2>&1)"
+  assert_contains "$output" "orphan-empty"
+  assert_contains "$output" "EMPTY"
+  assert_contains "$output" "orphan-dormant"
+  assert_contains "$output" "DORMANT"
+  assert_contains "$output" "orphan-recent"
+  assert_contains "$output" "RECENT"
+  assert_contains "$output" "scaffold"
+  assert_contains "$output" "SKIP-PARTIAL"
+  assert_not_contains "$output" "atlas"
+  assert_contains "$output" "DRY RUN — no directories moved or deleted."
+
+  local mutate_output
+  mutate_output="$(bash "$ROOT_DIR/scripts/agent-dirs-audit.sh" --archive --delete-empty 2>&1)"
+  assert_contains "$mutate_output" "Deleted empty dir: orphan-empty"
+  assert_contains "$mutate_output" "Archived dormant dir: orphan-dormant"
+
+  [[ ! -d "$HOME/.openclaw/agents/orphan-empty" ]] || fail "expected orphan-empty to be deleted"
+  [[ ! -d "$HOME/.openclaw/agents/orphan-dormant" ]] || fail "expected orphan-dormant to be archived"
+  [[ -d "$HOME/.openclaw/agents/orphan-recent" ]] || fail "expected orphan-recent to remain"
+  [[ -d "$HOME/.openclaw/agents/scaffold" ]] || fail "expected scaffold to remain"
+  [[ -d "$HOME/.openclaw/agents/_archived/$(date +%F)/orphan-dormant" ]] || fail "expected orphan-dormant archive dir"
+}
+
+test_backup_rotate_groups_and_prunes_old_backups() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  mkdir -p "$HOME/.openclaw/agents/atlas/sessions" "$HOME/.openclaw/cron" "$HOME/.openclaw/state"
+
+  : >"$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260401"
+  : >"$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260402"
+  : >"$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260403"
+  : >"$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260404"
+  : >"$HOME/.openclaw/cron/jobs.json.bak"
+  : >"$HOME/.openclaw/cron/jobs.json.bak-2026-04-01T1147"
+  : >"$HOME/.openclaw/state/CIRCUIT_BREAKER_TRIPPED.bak-20260416-221243"
+
+  local now
+  now="$(date +%s)"
+  set_file_mtime "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260401" "$((now - 400))"
+  set_file_mtime "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260402" "$((now - 300))"
+  set_file_mtime "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260403" "$((now - 200))"
+  set_file_mtime "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260404" "$((now - 100))"
+  set_file_mtime "$HOME/.openclaw/cron/jobs.json.bak" "$((now - 200))"
+  set_file_mtime "$HOME/.openclaw/cron/jobs.json.bak-2026-04-01T1147" "$((now - 100))"
+  set_file_mtime "$HOME/.openclaw/state/CIRCUIT_BREAKER_TRIPPED.bak-20260416-221243" "$((now - 100))"
+
+  local output
+  output="$(OPENCLAW_DIR="$HOME/.openclaw" bash "$ROOT_DIR/scripts/backup-rotate.sh" --keep 2 2>&1)"
+
+  local apply_output
+  apply_output="$(OPENCLAW_DIR="$HOME/.openclaw" bash "$ROOT_DIR/scripts/backup-rotate.sh" --apply --keep 2 2>&1)"
+
+  [[ ! -e "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260401" ]] || fail "expected oldest sessions backup removed"
+  [[ ! -e "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260402" ]] || fail "expected second-oldest sessions backup removed"
+  [[ -e "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260403" ]] || fail "expected newer sessions backup kept"
+  [[ -e "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260404" ]] || fail "expected newest sessions backup kept"
+  [[ -e "$HOME/.openclaw/cron/jobs.json.bak" ]] || fail "expected jobs backup kept when keep=2"
+  [[ -e "$HOME/.openclaw/cron/jobs.json.bak-2026-04-01T1147" ]] || fail "expected newer jobs backup kept when keep=2"
+  [[ -e "$HOME/.openclaw/state/CIRCUIT_BREAKER_TRIPPED.bak-20260416-221243" ]] || fail "expected single backup group kept"
+}
+
+test_context_audit_filters_thresholds_and_agent_scope() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  mkdir -p "$HOME/.openclaw/agents/atlas" "$HOME/.openclaw/agents/scout" "$HOME/.openclaw/agents/_archived/old" "$HOME/.openclaw/workspace-main"
+
+  python3 - <<'PY'
+from pathlib import Path
+import os
+
+base = Path(os.path.expanduser("~/.openclaw"))
+(base / "agents/atlas/AGENTS.md").write_text("A" * 48000, encoding="utf-8")
+(base / "agents/scout/MEMORY.md").write_text("B" * 12000, encoding="utf-8")
+(base / "workspace-main/SOUL.md").write_text("C" * 42000, encoding="utf-8")
+(base / "agents/_archived/old/AGENTS.md").write_text("D" * 50000, encoding="utf-8")
+PY
+
+  local output
+  output="$(OPENCLAW_DIR="$HOME/.openclaw" bash "$ROOT_DIR/scripts/context-audit.sh" --threshold-tokens 10000 2>&1)"
+  assert_contains "$output" "agents/atlas/AGENTS.md"
+  assert_contains "$output" "workspace-main/SOUL.md"
+  assert_not_contains "$output" "agents/scout/MEMORY.md"
+  assert_not_contains "$output" "_archived/old/AGENTS.md"
+
+  local atlas_json
+  atlas_json="$(OPENCLAW_DIR="$HOME/.openclaw" bash "$ROOT_DIR/scripts/context-audit.sh" --agent atlas --threshold-tokens 10000 --json 2>&1)"
+  assert_contains "$atlas_json" "\"threshold_tokens\": 10000"
+  assert_contains "$atlas_json" "\"path\": \"$HOME/.openclaw/agents/atlas/AGENTS.md\""
+  assert_not_contains "$atlas_json" "workspace-main/SOUL.md"
+
+  local none
+  none="$(OPENCLAW_DIR="$HOME/.openclaw" bash "$ROOT_DIR/scripts/context-audit.sh" --agent scout --threshold-tokens 10000 2>&1)"
+  assert_contains "$none" "No context files at or above 10000 tokens found for agent scout."
+}
+
 test_daily_digest_summarizes_incidents_activity_and_watchdog() {
   setup_fake_env
   trap teardown_fake_env RETURN
@@ -720,5 +1182,11 @@ run_test test_session_monitor_detects_auth_errors_and_error_clusters_in_long_ses
 run_test test_watchdog_throttles_session_monitor_invocation
 run_test test_session_search_sanitizes_and_handles_corruption
 run_test test_session_resume_uses_compaction_and_detects_failure
+run_test test_prompt_truncation_report_handles_latest_session_and_json_output
+run_test test_cron_optimize_reports_and_fixes_missing_light_context
+run_test test_cron_error_inspector_formats_erroring_jobs
+run_test test_agent_dirs_audit_classifies_and_mutates_candidates
+run_test test_backup_rotate_groups_and_prunes_old_backups
+run_test test_context_audit_filters_thresholds_and_agent_scope
 run_test test_daily_digest_summarizes_incidents_activity_and_watchdog
 printf 'All openclaw-ops tests passed\n'

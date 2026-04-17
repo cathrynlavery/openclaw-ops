@@ -377,6 +377,9 @@ openclaw cron list
 
 # View run history for the job
 openclaw cron runs
+
+# Check whether agent cron jobs are missing light-context
+bash scripts/cron-optimize.sh
 ```
 
 **Common causes:**
@@ -391,6 +394,13 @@ openclaw cron run <id>
 
 # Fix timezone if needed
 openclaw cron edit <id>
+
+# Or bulk-enable light-context on agent cron jobs
+bash scripts/cron-optimize.sh --fix --level low
+
+# Inspect the actual cron error state and payload preview
+bash scripts/cron-error-inspector.sh
+bash scripts/cron-error-inspector.sh --agent atlas --consecutive 2
 ```
 
 #### Cron Webhook SSRF (Security)
@@ -510,6 +520,47 @@ openclaw logs | grep -i "sub-agent\|spawn"
 
 ### Session Management Issues (v2026.2.23+)
 
+#### Prompt Too Long or Incomplete Bootstrap Context
+**Symptoms:** Users report “prompt too long,” “instructions too long,” or the agent starts with obviously incomplete workspace context.
+
+**Diagnose:**
+```bash
+# Check latest-session bootstrap truncation warnings across claimed agents
+bash scripts/prompt-truncation-report.sh
+
+# Inspect one agent and emit raw JSON
+bash scripts/prompt-truncation-report.sh --agent atlas --json
+```
+
+If this reports truncated or near-limit files, the problem is usually prompt assembly or oversized bootstrap files, not gateway liveness.
+
+#### Unconfigured Agent Directories Piling Up
+**Symptoms:** `~/.openclaw/agents/` contains old agent dirs that are no longer configured, and you want to separate safe archive/delete candidates from recent dirs that still need inspection.
+
+**Diagnose / act:**
+```bash
+bash scripts/agent-dirs-audit.sh
+bash scripts/agent-dirs-audit.sh --archive --delete-empty
+```
+
+#### Backup Files Multiplying Everywhere
+**Symptoms:** `*.bak*` files accumulate across `~/.openclaw`, not just in session stores.
+
+**Diagnose / act:**
+```bash
+bash scripts/backup-rotate.sh
+bash scripts/backup-rotate.sh --apply --keep 3
+```
+
+#### Oversized AGENTS / MEMORY / SOUL Files
+**Symptoms:** Bootstrap context feels heavier over time and you want to identify large context files without mixing that audit into runtime truncation checks.
+
+**Diagnose:**
+```bash
+bash scripts/context-audit.sh
+bash scripts/context-audit.sh --agent atlas --threshold-tokens 10000 --json
+```
+
 #### Disk Space Growing from Sessions
 **Symptoms:** `~/.openclaw/agents/` directory consuming excessive disk
 
@@ -522,6 +573,30 @@ openclaw sessions cleanup
 openclaw config set session.maintenance.maxDiskBytes 1073741824
 openclaw config set session.maintenance.highWaterBytes 858993459
 ```
+
+#### Slow Gateway or Session Bloat
+**Symptoms:** Gateway feels sluggish after weeks of uptime, `sessions.json` has hundreds of stale entries, cron/subagent runs leave orphaned transcripts behind, prompt bootstrap gets heavier over time.
+
+**Diagnose:**
+```bash
+# Dry-run the targeted purge first
+bash scripts/session-purge.sh
+
+# Inspect a single noisy agent
+bash scripts/session-purge.sh --agent atlas
+```
+
+**Fix:**
+```bash
+# Purge stale session index entries, orphan cron/subagent sessions,
+# old backups, and orphaned transcript files
+bash scripts/session-purge.sh --apply
+
+# Or limit to one agent
+bash scripts/session-purge.sh --agent atlas --apply
+```
+
+`session-purge.sh` keeps active sessions intact, creates a fresh `sessions.json` backup before mutating, and preserves the newest backup files by default. Use this when `openclaw sessions cleanup` is not enough because the bloat lives in stale index rows, `.bak` files, or orphan `.jsonl` transcripts outside the normal maintenance path.
 
 ### Service Issues (systemd)
 

@@ -33,6 +33,13 @@ All scripts live in `scripts/` relative to this skill (typically `~/.openclaw/sk
 | `session-monitor.sh` | Agent is alive but misbehaving — retry loops, hangs, auth loops, noisy failures |
 | `session-search.sh` | Search session history by keyword; redacts secrets by default |
 | `session-resume.sh` | Build a readable markdown resume for a single session (compaction-first, then point-of-failure) |
+| `prompt-truncation-report.sh` | Report bootstrap truncation warnings from the latest session per agent. Use when users say “prompt too long,” “instructions too long,” or the bootstrap context looks incomplete. |
+| `cron-optimize.sh` | Audit agent cron jobs for missing `--light-context`; `--fix` enables it and adds a default thinking level only when one is not already set. |
+| `cron-error-inspector.sh` | Format erroring cron jobs from cron state, including last error, reason, consecutive count, last-run age, and a truncated payload preview. |
+| `agent-dirs-audit.sh` | Audit unconfigured dirs under `~/.openclaw/agents/`. Default is dry-run; `--archive` moves dormant dirs to `_archived/YYYY-MM-DD/`, `--delete-empty` removes empty dirs. |
+| `backup-rotate.sh` | Rotate generic `*.bak*` files across `~/.openclaw`, grouped by the path prefix before `.bak`. Keeps the newest N per group; dry-run by default, `--apply` to delete. |
+| `context-audit.sh` | Audit AGENTS.md, MEMORY.md, and SOUL*.md for file bloat. Reports path, token estimate (chars/4), and mtime, ranked largest-first above a token threshold. |
+| `session-purge.sh` | Reclaim disk + cut session context bloat. Purges stale session index entries, orphan cron/subagent sessions, old `.bak` files, and orphan `.jsonl` transcripts. Dry-run by default; `--apply` to execute. |
 | `daily-digest.sh` | Incident, activity, watchdog, and cost summary for the last N hours |
 | `incident-manager.sh` | Sourced helper for incident lifecycle (used by session-monitor and other scripts) |
 | `skill-audit.sh` | Before `clawhub install` — scan skill for secrets, injection, dangerous commands; outputs LOW/MEDIUM/HIGH risk score |
@@ -57,6 +64,38 @@ bash scripts/session-monitor.sh --verbose
 
 # Search sessions for auth failures:
 bash scripts/session-search.sh "unauthorized" --limit 10
+
+# Build a resume for one session:
+bash scripts/session-resume.sh ~/.openclaw/agents/knox/sessions/<session>.jsonl
+
+# Check bootstrap truncation warnings:
+bash scripts/prompt-truncation-report.sh
+bash scripts/prompt-truncation-report.sh --agent atlas --json
+
+# Audit cron jobs for missing light-context:
+bash scripts/cron-optimize.sh
+bash scripts/cron-optimize.sh --fix --level low
+
+# Inspect cron failures:
+bash scripts/cron-error-inspector.sh
+bash scripts/cron-error-inspector.sh --agent atlas --consecutive 2
+
+# Audit unconfigured agent dirs:
+bash scripts/agent-dirs-audit.sh
+bash scripts/agent-dirs-audit.sh --archive --delete-empty
+
+# Rotate old backup files:
+bash scripts/backup-rotate.sh
+bash scripts/backup-rotate.sh --apply --keep 3
+
+# Audit oversized context files:
+bash scripts/context-audit.sh
+bash scripts/context-audit.sh --agent atlas --threshold-tokens 10000 --json
+
+# Reclaim disk + trim session bloat (dry-run first):
+bash scripts/session-purge.sh
+bash scripts/session-purge.sh --apply               # all agents, 7d cutoff
+bash scripts/session-purge.sh --agent atlas --apply # single agent
 
 # 24-hour digest:
 bash scripts/daily-digest.sh --hours 24
