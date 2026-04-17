@@ -397,6 +397,10 @@ openclaw cron edit <id>
 
 # Or bulk-enable light-context on agent cron jobs
 bash scripts/cron-optimize.sh --fix --level low
+
+# Inspect the actual cron error state and payload preview
+bash scripts/cron-error-inspector.sh
+bash scripts/cron-error-inspector.sh --agent atlas --consecutive 2
 ```
 
 #### Cron Webhook SSRF (Security)

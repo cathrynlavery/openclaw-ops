@@ -33,6 +33,7 @@ This skill ships executable scripts for automated repair and continuous monitori
 | `scripts/session-resume.sh` | Compaction-first markdown resume for a single session, including failure context |
 | `scripts/prompt-truncation-report.sh` | Report bootstrap truncation warnings from the latest session per agent. Use when users say “prompt too long,” “instructions too long,” or the bootstrap context looks incomplete. |
 | `scripts/cron-optimize.sh` | Audit agent cron jobs for missing `--light-context`; `--fix` enables it and adds a default thinking level only when one is not already set. |
+| `scripts/cron-error-inspector.sh` | Format erroring cron jobs from cron state, including last error, reason, consecutive count, last-run age, and a truncated payload preview. |
 | `scripts/session-purge.sh` | Reclaim disk + cut session context bloat. Purges stale session index entries, orphan cron/subagent sessions, old `.bak` files, and orphan `.jsonl` transcripts. Dry-run by default; `--apply` to execute. |
 | `scripts/daily-digest.sh` | Incident, activity, watchdog, and cost summary for the last N hours |
 | `scripts/incident-manager.sh` | Sourced incident lifecycle helper used by session-monitor and other ops scripts |
@@ -132,6 +133,10 @@ bash scripts/prompt-truncation-report.sh --agent atlas --json
 # Audit cron jobs for missing light-context:
 bash scripts/cron-optimize.sh
 bash scripts/cron-optimize.sh --fix --level low
+
+# Inspect cron failures:
+bash scripts/cron-error-inspector.sh
+bash scripts/cron-error-inspector.sh --agent atlas --consecutive 2
 
 # Reclaim disk + trim session bloat (dry-run first):
 bash scripts/session-purge.sh

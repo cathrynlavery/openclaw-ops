@@ -915,6 +915,94 @@ PY
   assert_contains "$post_fix" "All 3 listed agent cron jobs already use --light-context."
 }
 
+test_cron_error_inspector_formats_erroring_jobs() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  export OPENCLAW_CRON_STATE_FILE="$HOME/.openclaw/cron-state.json"
+
+  python3 - "$OPENCLAW_CRON_STATE_FILE" <<'PY'
+import json
+import time
+import sys
+
+now_ms = int(time.time() * 1000)
+payload = {
+    "jobs": [
+        {
+            "id": "job-1",
+            "agentId": "atlas",
+            "name": "Atlas timeout",
+            "schedule": {"kind": "cron", "expr": "0 8 * * *", "tz": "America/Chicago"},
+            "payload": {
+                "kind": "agentTurn",
+                "message": "A" * 600,
+                "lightContext": False,
+            },
+            "state": {
+                "lastRunAtMs": now_ms - 120000,
+                "lastStatus": "error",
+                "lastRunStatus": "error",
+                "consecutiveErrors": 3,
+                "lastError": "cron: job execution timed out",
+                "lastErrorReason": "timeout",
+            },
+        },
+        {
+            "id": "job-2",
+            "agentId": "atlas",
+            "name": "Atlas healthy",
+            "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "America/Chicago"},
+            "payload": {"kind": "agentTurn", "message": "ok", "lightContext": True},
+            "state": {
+                "lastRunAtMs": now_ms - 60000,
+                "lastStatus": "ok",
+                "lastRunStatus": "ok",
+                "consecutiveErrors": 0,
+            },
+        },
+        {
+            "id": "job-3",
+            "agentId": "scout",
+            "name": "Scout webhook error",
+            "schedule": {"kind": "cron", "expr": "0 10 * * *", "tz": "America/Chicago"},
+            "payload": {"kind": "systemEvent", "systemEvent": "noop"},
+            "state": {
+                "lastRunAtMs": now_ms - 90000,
+                "lastStatus": "error",
+                "lastRunStatus": "error",
+                "consecutiveErrors": 1,
+                "lastError": "webhook delivery failed",
+                "lastErrorReason": "delivery",
+            },
+        },
+    ]
+}
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+PY
+
+  local output
+  output="$(bash "$ROOT_DIR/scripts/cron-error-inspector.sh" 2>&1)"
+  assert_contains "$output" "job-1 | Atlas timeout"
+  assert_contains "$output" "job-3 | Scout webhook error"
+  assert_not_contains "$output" "job-2"
+  assert_contains "$output" "state.lastErrorReason: timeout"
+  assert_contains "$output" "state.lastError: cron: job execution timed out"
+  assert_contains "$output" 'hint: Timeout + missing light-context: consider `openclaw cron edit <id> --light-context`.'
+  assert_contains "$output" "payload: kind=agentTurn | lightContext=False |"
+  assert_not_contains "$output" "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+  local filtered
+  filtered="$(bash "$ROOT_DIR/scripts/cron-error-inspector.sh" --agent atlas --consecutive 2 2>&1)"
+  assert_contains "$filtered" "job-1 | Atlas timeout"
+  assert_not_contains "$filtered" "job-3 | Scout webhook error"
+
+  local none
+  none="$(bash "$ROOT_DIR/scripts/cron-error-inspector.sh" --agent scout --consecutive 2 2>&1)"
+  assert_contains "$none" "No erroring cron jobs found for agent scout with consecutiveErrors >= 2."
+}
+
 test_daily_digest_summarizes_incidents_activity_and_watchdog() {
   setup_fake_env
   trap teardown_fake_env RETURN
@@ -962,5 +1050,6 @@ run_test test_session_search_sanitizes_and_handles_corruption
 run_test test_session_resume_uses_compaction_and_detects_failure
 run_test test_prompt_truncation_report_handles_latest_session_and_json_output
 run_test test_cron_optimize_reports_and_fixes_missing_light_context
+run_test test_cron_error_inspector_formats_erroring_jobs
 run_test test_daily_digest_summarizes_incidents_activity_and_watchdog
 printf 'All openclaw-ops tests passed\n'
