@@ -510,6 +510,20 @@ openclaw logs | grep -i "sub-agent\|spawn"
 
 ### Session Management Issues (v2026.2.23+)
 
+#### Prompt Too Long or Incomplete Bootstrap Context
+**Symptoms:** Users report “prompt too long,” “instructions too long,” or the agent starts with obviously incomplete workspace context.
+
+**Diagnose:**
+```bash
+# Check latest-session bootstrap truncation warnings across claimed agents
+bash scripts/prompt-truncation-report.sh
+
+# Inspect one agent and emit raw JSON
+bash scripts/prompt-truncation-report.sh --agent atlas --json
+```
+
+If this reports truncated or near-limit files, the problem is usually prompt assembly or oversized bootstrap files, not gateway liveness.
+
 #### Disk Space Growing from Sessions
 **Symptoms:** `~/.openclaw/agents/` directory consuming excessive disk
 

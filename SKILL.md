@@ -31,6 +31,7 @@ This skill ships executable scripts for automated repair and continuous monitori
 | `scripts/session-monitor.sh` | Behavioral checks over live session JSONL files; writes incidents + `latest.json` |
 | `scripts/session-search.sh` | Fast full-text session search with structured output and default secret redaction |
 | `scripts/session-resume.sh` | Compaction-first markdown resume for a single session, including failure context |
+| `scripts/prompt-truncation-report.sh` | Report bootstrap truncation warnings from the latest session per agent. Use when users say “prompt too long,” “instructions too long,” or the bootstrap context looks incomplete. |
 | `scripts/session-purge.sh` | Reclaim disk + cut session context bloat. Purges stale session index entries, orphan cron/subagent sessions, old `.bak` files, and orphan `.jsonl` transcripts. Dry-run by default; `--apply` to execute. |
 | `scripts/daily-digest.sh` | Incident, activity, watchdog, and cost summary for the last N hours |
 | `scripts/incident-manager.sh` | Sourced incident lifecycle helper used by session-monitor and other ops scripts |
@@ -122,6 +123,10 @@ bash scripts/session-search.sh "unauthorized" --limit 10
 
 # Build a resume for one session:
 bash scripts/session-resume.sh ~/.openclaw/agents/knox/sessions/<session>.jsonl
+
+# Check bootstrap truncation warnings:
+bash scripts/prompt-truncation-report.sh
+bash scripts/prompt-truncation-report.sh --agent atlas --json
 
 # Reclaim disk + trim session bloat (dry-run first):
 bash scripts/session-purge.sh

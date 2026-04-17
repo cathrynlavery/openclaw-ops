@@ -675,6 +675,103 @@ test_session_resume_uses_compaction_and_detects_failure() {
   assert_contains "$output" "permission denied"
 }
 
+test_prompt_truncation_report_handles_latest_session_and_json_output() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  mkdir -p "$HOME/.openclaw/agents/atlas/sessions"
+  mkdir -p "$HOME/.openclaw/agents/scout/sessions"
+  mkdir -p "$HOME/.openclaw/agents/ghost/sessions"
+  mkdir -p "$HOME/.openclaw/agents/empty/sessions"
+  : >"$HOME/.openclaw/agents/atlas/paperclip-claimed-api-key.json"
+  : >"$HOME/.openclaw/agents/scout/paperclip-claimed-api-key.json"
+  : >"$HOME/.openclaw/agents/ghost/paperclip-claimed-api-key.json"
+
+  python3 - "$HOME/.openclaw/agents/atlas/sessions/sessions.json" <<'PY'
+import json
+import sys
+
+payload = {
+    "older-session": {
+        "updatedAt": 1712000000000,
+        "modelProvider": "openai-codex",
+        "systemPromptReport": {
+            "bootstrapTruncation": {
+                "warningShown": False,
+                "truncatedFiles": [],
+                "nearLimitFiles": [],
+                "totalNearLimit": 0,
+            }
+        },
+    },
+    "latest-session": {
+        "updatedAt": 1712100000000,
+        "modelProvider": "openai-codex",
+        "systemPromptReport": {
+            "bootstrapTruncation": {
+                "warningShown": True,
+                "truncatedFiles": [{"path": "AGENTS.md"}],
+                "nearLimitFiles": [{"path": "MEMORY.md"}],
+                "totalNearLimit": 1,
+            }
+        },
+    },
+}
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+PY
+
+  python3 - "$HOME/.openclaw/agents/scout/sessions/sessions.json" <<'PY'
+import json
+import sys
+
+payload = {
+    "sessions": [
+        {
+            "id": "scout-latest",
+            "updatedAt": "2026-04-04T12:00:00Z",
+            "modelProvider": "anthropic",
+            "systemPromptReport": {
+                "bootstrapTruncation": {
+                    "warningShown": False,
+                    "truncatedFiles": [],
+                    "nearLimitFiles": ["SOUL.md"],
+                    "totalNearLimit": 1,
+                }
+            },
+        }
+    ]
+}
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+PY
+
+  printf '{not json}\n' >"$HOME/.openclaw/agents/ghost/sessions/sessions.json"
+
+  local output
+  output="$(bash "$ROOT_DIR/scripts/prompt-truncation-report.sh" 2>&1)"
+  assert_contains "$output" "Bootstrap truncation warnings found in 2 of 3 checked agents"
+  assert_contains "$output" "atlas (latest-session)"
+  assert_contains "$output" "truncated: AGENTS.md"
+  assert_contains "$output" "near-limit: MEMORY.md"
+  assert_contains "$output" "scout (scout-latest)"
+  assert_contains "$output" "near-limit: SOUL.md"
+  assert_not_contains "$output" "ghost"
+  assert_not_contains "$output" "empty"
+
+  local atlas_json
+  atlas_json="$(bash "$ROOT_DIR/scripts/prompt-truncation-report.sh" --agent atlas --json 2>&1)"
+  assert_contains "$atlas_json" "\"affected_agents\": 1"
+  assert_contains "$atlas_json" "\"agent\": \"atlas\""
+  assert_contains "$atlas_json" "\"session_key\": \"latest-session\""
+  assert_contains "$atlas_json" "\"truncated_count\": 1"
+
+  local empty_json
+  empty_json="$(bash "$ROOT_DIR/scripts/prompt-truncation-report.sh" --agent empty --json 2>&1)"
+  assert_contains "$empty_json" "\"checked_agents\": 1"
+  assert_contains "$empty_json" "\"affected_agents\": 0"
+}
+
 test_daily_digest_summarizes_incidents_activity_and_watchdog() {
   setup_fake_env
   trap teardown_fake_env RETURN
@@ -720,5 +817,6 @@ run_test test_session_monitor_detects_auth_errors_and_error_clusters_in_long_ses
 run_test test_watchdog_throttles_session_monitor_invocation
 run_test test_session_search_sanitizes_and_handles_corruption
 run_test test_session_resume_uses_compaction_and_detects_failure
+run_test test_prompt_truncation_report_handles_latest_session_and_json_output
 run_test test_daily_digest_summarizes_incidents_activity_and_watchdog
 printf 'All openclaw-ops tests passed\n'
