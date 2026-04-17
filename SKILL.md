@@ -36,6 +36,7 @@ This skill ships executable scripts for automated repair and continuous monitori
 | `scripts/cron-error-inspector.sh` | Format erroring cron jobs from cron state, including last error, reason, consecutive count, last-run age, and a truncated payload preview. |
 | `scripts/agent-dirs-audit.sh` | Audit unconfigured dirs under `~/.openclaw/agents/`. Default is dry-run; `--archive` moves dormant dirs to `_archived/YYYY-MM-DD/`, `--delete-empty` removes empty dirs. |
 | `scripts/backup-rotate.sh` | Rotate generic `*.bak*` files across `~/.openclaw`, grouped by the path prefix before `.bak`. Keeps the newest N per group; dry-run by default, `--apply` to delete. |
+| `scripts/context-audit.sh` | Audit AGENTS.md, MEMORY.md, and SOUL*.md for file bloat. Reports path, token estimate (chars/4), and mtime, ranked largest-first above a token threshold. |
 | `scripts/session-purge.sh` | Reclaim disk + cut session context bloat. Purges stale session index entries, orphan cron/subagent sessions, old `.bak` files, and orphan `.jsonl` transcripts. Dry-run by default; `--apply` to execute. |
 | `scripts/daily-digest.sh` | Incident, activity, watchdog, and cost summary for the last N hours |
 | `scripts/incident-manager.sh` | Sourced incident lifecycle helper used by session-monitor and other ops scripts |
@@ -147,6 +148,10 @@ bash scripts/agent-dirs-audit.sh --archive --delete-empty
 # Rotate old backup files:
 bash scripts/backup-rotate.sh
 bash scripts/backup-rotate.sh --apply --keep 3
+
+# Audit oversized context files:
+bash scripts/context-audit.sh
+bash scripts/context-audit.sh --agent atlas --threshold-tokens 10000 --json
 
 # Reclaim disk + trim session bloat (dry-run first):
 bash scripts/session-purge.sh

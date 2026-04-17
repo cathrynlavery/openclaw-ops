@@ -552,6 +552,15 @@ bash scripts/backup-rotate.sh
 bash scripts/backup-rotate.sh --apply --keep 3
 ```
 
+#### Oversized AGENTS / MEMORY / SOUL Files
+**Symptoms:** Bootstrap context feels heavier over time and you want to identify large context files without mixing that audit into runtime truncation checks.
+
+**Diagnose:**
+```bash
+bash scripts/context-audit.sh
+bash scripts/context-audit.sh --agent atlas --threshold-tokens 10000 --json
+```
+
 #### Disk Space Growing from Sessions
 **Symptoms:** `~/.openclaw/agents/` directory consuming excessive disk
 

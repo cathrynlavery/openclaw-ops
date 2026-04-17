@@ -1102,6 +1102,41 @@ test_backup_rotate_groups_and_prunes_old_backups() {
   [[ -e "$HOME/.openclaw/state/CIRCUIT_BREAKER_TRIPPED.bak-20260416-221243" ]] || fail "expected single backup group kept"
 }
 
+test_context_audit_filters_thresholds_and_agent_scope() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  mkdir -p "$HOME/.openclaw/agents/atlas" "$HOME/.openclaw/agents/scout" "$HOME/.openclaw/agents/_archived/old" "$HOME/.openclaw/workspace-main"
+
+  python3 - <<'PY'
+from pathlib import Path
+import os
+
+base = Path(os.path.expanduser("~/.openclaw"))
+(base / "agents/atlas/AGENTS.md").write_text("A" * 48000, encoding="utf-8")
+(base / "agents/scout/MEMORY.md").write_text("B" * 12000, encoding="utf-8")
+(base / "workspace-main/SOUL.md").write_text("C" * 42000, encoding="utf-8")
+(base / "agents/_archived/old/AGENTS.md").write_text("D" * 50000, encoding="utf-8")
+PY
+
+  local output
+  output="$(OPENCLAW_DIR="$HOME/.openclaw" bash "$ROOT_DIR/scripts/context-audit.sh" --threshold-tokens 10000 2>&1)"
+  assert_contains "$output" "agents/atlas/AGENTS.md"
+  assert_contains "$output" "workspace-main/SOUL.md"
+  assert_not_contains "$output" "agents/scout/MEMORY.md"
+  assert_not_contains "$output" "_archived/old/AGENTS.md"
+
+  local atlas_json
+  atlas_json="$(OPENCLAW_DIR="$HOME/.openclaw" bash "$ROOT_DIR/scripts/context-audit.sh" --agent atlas --threshold-tokens 10000 --json 2>&1)"
+  assert_contains "$atlas_json" "\"threshold_tokens\": 10000"
+  assert_contains "$atlas_json" "\"path\": \"$HOME/.openclaw/agents/atlas/AGENTS.md\""
+  assert_not_contains "$atlas_json" "workspace-main/SOUL.md"
+
+  local none
+  none="$(OPENCLAW_DIR="$HOME/.openclaw" bash "$ROOT_DIR/scripts/context-audit.sh" --agent scout --threshold-tokens 10000 2>&1)"
+  assert_contains "$none" "No context files at or above 10000 tokens found for agent scout."
+}
+
 test_daily_digest_summarizes_incidents_activity_and_watchdog() {
   setup_fake_env
   trap teardown_fake_env RETURN
@@ -1152,5 +1187,6 @@ run_test test_cron_optimize_reports_and_fixes_missing_light_context
 run_test test_cron_error_inspector_formats_erroring_jobs
 run_test test_agent_dirs_audit_classifies_and_mutates_candidates
 run_test test_backup_rotate_groups_and_prunes_old_backups
+run_test test_context_audit_filters_thresholds_and_agent_scope
 run_test test_daily_digest_summarizes_incidents_activity_and_watchdog
 printf 'All openclaw-ops tests passed\n'
