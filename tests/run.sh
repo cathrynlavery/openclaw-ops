@@ -1063,6 +1063,45 @@ EOF
   [[ -d "$HOME/.openclaw/agents/_archived/$(date +%F)/orphan-dormant" ]] || fail "expected orphan-dormant archive dir"
 }
 
+test_backup_rotate_groups_and_prunes_old_backups() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  mkdir -p "$HOME/.openclaw/agents/atlas/sessions" "$HOME/.openclaw/cron" "$HOME/.openclaw/state"
+
+  : >"$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260401"
+  : >"$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260402"
+  : >"$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260403"
+  : >"$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260404"
+  : >"$HOME/.openclaw/cron/jobs.json.bak"
+  : >"$HOME/.openclaw/cron/jobs.json.bak-2026-04-01T1147"
+  : >"$HOME/.openclaw/state/CIRCUIT_BREAKER_TRIPPED.bak-20260416-221243"
+
+  local now
+  now="$(date +%s)"
+  set_file_mtime "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260401" "$((now - 400))"
+  set_file_mtime "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260402" "$((now - 300))"
+  set_file_mtime "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260403" "$((now - 200))"
+  set_file_mtime "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260404" "$((now - 100))"
+  set_file_mtime "$HOME/.openclaw/cron/jobs.json.bak" "$((now - 200))"
+  set_file_mtime "$HOME/.openclaw/cron/jobs.json.bak-2026-04-01T1147" "$((now - 100))"
+  set_file_mtime "$HOME/.openclaw/state/CIRCUIT_BREAKER_TRIPPED.bak-20260416-221243" "$((now - 100))"
+
+  local output
+  output="$(OPENCLAW_DIR="$HOME/.openclaw" bash "$ROOT_DIR/scripts/backup-rotate.sh" --keep 2 2>&1)"
+
+  local apply_output
+  apply_output="$(OPENCLAW_DIR="$HOME/.openclaw" bash "$ROOT_DIR/scripts/backup-rotate.sh" --apply --keep 2 2>&1)"
+
+  [[ ! -e "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260401" ]] || fail "expected oldest sessions backup removed"
+  [[ ! -e "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260402" ]] || fail "expected second-oldest sessions backup removed"
+  [[ -e "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260403" ]] || fail "expected newer sessions backup kept"
+  [[ -e "$HOME/.openclaw/agents/atlas/sessions/sessions.json.bak-20260404" ]] || fail "expected newest sessions backup kept"
+  [[ -e "$HOME/.openclaw/cron/jobs.json.bak" ]] || fail "expected jobs backup kept when keep=2"
+  [[ -e "$HOME/.openclaw/cron/jobs.json.bak-2026-04-01T1147" ]] || fail "expected newer jobs backup kept when keep=2"
+  [[ -e "$HOME/.openclaw/state/CIRCUIT_BREAKER_TRIPPED.bak-20260416-221243" ]] || fail "expected single backup group kept"
+}
+
 test_daily_digest_summarizes_incidents_activity_and_watchdog() {
   setup_fake_env
   trap teardown_fake_env RETURN
@@ -1112,5 +1151,6 @@ run_test test_prompt_truncation_report_handles_latest_session_and_json_output
 run_test test_cron_optimize_reports_and_fixes_missing_light_context
 run_test test_cron_error_inspector_formats_erroring_jobs
 run_test test_agent_dirs_audit_classifies_and_mutates_candidates
+run_test test_backup_rotate_groups_and_prunes_old_backups
 run_test test_daily_digest_summarizes_incidents_activity_and_watchdog
 printf 'All openclaw-ops tests passed\n'

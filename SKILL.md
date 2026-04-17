@@ -35,6 +35,7 @@ This skill ships executable scripts for automated repair and continuous monitori
 | `scripts/cron-optimize.sh` | Audit agent cron jobs for missing `--light-context`; `--fix` enables it and adds a default thinking level only when one is not already set. |
 | `scripts/cron-error-inspector.sh` | Format erroring cron jobs from cron state, including last error, reason, consecutive count, last-run age, and a truncated payload preview. |
 | `scripts/agent-dirs-audit.sh` | Audit unconfigured dirs under `~/.openclaw/agents/`. Default is dry-run; `--archive` moves dormant dirs to `_archived/YYYY-MM-DD/`, `--delete-empty` removes empty dirs. |
+| `scripts/backup-rotate.sh` | Rotate generic `*.bak*` files across `~/.openclaw`, grouped by the path prefix before `.bak`. Keeps the newest N per group; dry-run by default, `--apply` to delete. |
 | `scripts/session-purge.sh` | Reclaim disk + cut session context bloat. Purges stale session index entries, orphan cron/subagent sessions, old `.bak` files, and orphan `.jsonl` transcripts. Dry-run by default; `--apply` to execute. |
 | `scripts/daily-digest.sh` | Incident, activity, watchdog, and cost summary for the last N hours |
 | `scripts/incident-manager.sh` | Sourced incident lifecycle helper used by session-monitor and other ops scripts |
@@ -142,6 +143,10 @@ bash scripts/cron-error-inspector.sh --agent atlas --consecutive 2
 # Audit unconfigured agent dirs:
 bash scripts/agent-dirs-audit.sh
 bash scripts/agent-dirs-audit.sh --archive --delete-empty
+
+# Rotate old backup files:
+bash scripts/backup-rotate.sh
+bash scripts/backup-rotate.sh --apply --keep 3
 
 # Reclaim disk + trim session bloat (dry-run first):
 bash scripts/session-purge.sh

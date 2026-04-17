@@ -543,6 +543,15 @@ bash scripts/agent-dirs-audit.sh
 bash scripts/agent-dirs-audit.sh --archive --delete-empty
 ```
 
+#### Backup Files Multiplying Everywhere
+**Symptoms:** `*.bak*` files accumulate across `~/.openclaw`, not just in session stores.
+
+**Diagnose / act:**
+```bash
+bash scripts/backup-rotate.sh
+bash scripts/backup-rotate.sh --apply --keep 3
+```
+
 #### Disk Space Growing from Sessions
 **Symptoms:** `~/.openclaw/agents/` directory consuming excessive disk
 
