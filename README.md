@@ -2,7 +2,7 @@
 
 OpenClaw gateway operations skill for agent environments. Covers health checks, repair workflows, continuous monitoring, session analysis, update-change detection, and security review for a local or self-hosted OpenClaw install.
 
-Tested against OpenClaw `2026.4.2`.
+Tested against OpenClaw `2026.4.11`.
 
 ## What it does
 
@@ -22,7 +22,7 @@ Tested against OpenClaw `2026.4.2`.
 | `scripts/health-check.sh` | Declarative URL/process health checks; auto-generates targets file on first run |
 | `scripts/security-scan.sh` | Config hardening and credential exposure scan (0–100 score) |
 | `scripts/skill-audit.sh` | Static security audit for third-party skills before installation |
-| `scripts/fix-cli-backend.sh` | Fixes Claude CLI subprocess backend config (wizard sets wrong key) |
+| `scripts/codex-perf-check.sh` | Check and fix GPT-5.x performance opt-ins that ship disabled by default; `--fix` to apply |
 | `scripts/session-monitor.sh` | Behavioral checks over live session JSONL files; detects retry loops, stuck runs, auth errors |
 | `scripts/session-search.sh` | Full-text session search with structured output and secret redaction |
 | `scripts/session-resume.sh` | Compaction-first markdown resume for a single session, including failure context |
@@ -143,7 +143,7 @@ journalctl --user -u openclaw-gateway -f
 - After the health check it best-effort touches `~/.openclaw/state/policy-guard.trigger` (creating parent dirs if needed). The VPS can wire `openclaw-policy-guard.path` to that sentinel after updates.
 - Set `OPENCLAW_POST_UPDATE_RECONCILE_SCRIPT` (and optionally `OPENCLAW_POST_UPDATE_RECONCILE_INTERPRETER`) if the reconcile script lives somewhere other than the default workspace path.
 - If another wrapper or automation layer launches the post-update hook, set `OPENCLAW_SKIP_WRAPPER_BACKUP=1` for nested `openclaw` calls so internal subcommands do not trigger backup loops.
-- The `startup model warmup failed for claude-cli/...` warning in `gateway.err.log` is non-fatal and expected when using the Claude CLI subprocess backend.
+- `codex-perf-check.sh` requires v2026.4.x or later — the four settings it checks do not exist in earlier releases.
 
 ## Running tests
 
