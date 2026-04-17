@@ -523,6 +523,30 @@ openclaw config set session.maintenance.maxDiskBytes 1073741824
 openclaw config set session.maintenance.highWaterBytes 858993459
 ```
 
+#### Slow Gateway or Session Bloat
+**Symptoms:** Gateway feels sluggish after weeks of uptime, `sessions.json` has hundreds of stale entries, cron/subagent runs leave orphaned transcripts behind, prompt bootstrap gets heavier over time.
+
+**Diagnose:**
+```bash
+# Dry-run the targeted purge first
+bash scripts/session-purge.sh
+
+# Inspect a single noisy agent
+bash scripts/session-purge.sh --agent atlas
+```
+
+**Fix:**
+```bash
+# Purge stale session index entries, orphan cron/subagent sessions,
+# old backups, and orphaned transcript files
+bash scripts/session-purge.sh --apply
+
+# Or limit to one agent
+bash scripts/session-purge.sh --agent atlas --apply
+```
+
+`session-purge.sh` keeps active sessions intact, creates a fresh `sessions.json` backup before mutating, and preserves the newest backup files by default. Use this when `openclaw sessions cleanup` is not enough because the bloat lives in stale index rows, `.bak` files, or orphan `.jsonl` transcripts outside the normal maintenance path.
+
 ### Service Issues (systemd)
 
 #### Service Not Starting
