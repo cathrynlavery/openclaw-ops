@@ -26,6 +26,13 @@ Tested against OpenClaw `2026.4.11`.
 | `scripts/session-monitor.sh` | Behavioral checks over live session JSONL files; detects retry loops, stuck runs, auth errors |
 | `scripts/session-search.sh` | Full-text session search with structured output and secret redaction |
 | `scripts/session-resume.sh` | Compaction-first markdown resume for a single session, including failure context |
+| `scripts/prompt-truncation-report.sh` | Reports bootstrap truncation warnings from the latest session per agent |
+| `scripts/cron-optimize.sh` | Audits agent cron jobs for missing `--light-context`; `--fix` applies the safe default |
+| `scripts/cron-error-inspector.sh` | Formats erroring cron jobs from cron state with last error, reason, age, and payload preview |
+| `scripts/agent-dirs-audit.sh` | Audits unconfigured dirs under `~/.openclaw/agents/`; optional archive/delete for safe candidates |
+| `scripts/backup-rotate.sh` | Rotates generic `*.bak*` files across `~/.openclaw`, keeping the newest N per base path |
+| `scripts/context-audit.sh` | Audits AGENTS / MEMORY / SOUL files for file-bloat risk using a token estimate (`chars / 4`) |
+| `scripts/session-purge.sh` | Reclaims session bloat by trimming stale session rows, orphan transcripts, and old session backups |
 | `scripts/daily-digest.sh` | Incident, activity, watchdog, and cost summary for the last N hours |
 | `scripts/incident-manager.sh` | Shared incident lifecycle helper (sourced by other scripts) |
 | `scripts/lib.sh` | Shared helpers: logging, port resolution, state files, sanitization (sourced) |
@@ -101,8 +108,37 @@ bash scripts/session-search.sh "unauthorized" --limit 10
 # Build a resume for a specific session
 bash scripts/session-resume.sh ~/.openclaw/agents/knox/sessions/<session>.jsonl
 
+# Bootstrap truncation warnings from latest sessions
+bash scripts/prompt-truncation-report.sh
+bash scripts/prompt-truncation-report.sh --agent atlas --json
+
 # 24-hour digest: incidents, activity, costs
 bash scripts/daily-digest.sh --hours 24
+```
+
+### Maintenance and cleanup
+
+```bash
+# Cron hygiene
+bash scripts/cron-optimize.sh
+bash scripts/cron-optimize.sh --fix --level low
+bash scripts/cron-error-inspector.sh
+
+# Agent directory hygiene
+bash scripts/agent-dirs-audit.sh
+bash scripts/agent-dirs-audit.sh --archive --delete-empty
+
+# Generic backup rotation
+bash scripts/backup-rotate.sh
+bash scripts/backup-rotate.sh --apply --keep 3
+
+# Oversized context files
+bash scripts/context-audit.sh
+bash scripts/context-audit.sh --agent atlas --threshold-tokens 10000 --json
+
+# Session bloat cleanup
+bash scripts/session-purge.sh
+bash scripts/session-purge.sh --apply
 ```
 
 ## Watchdog escalation model
@@ -144,6 +180,8 @@ journalctl --user -u openclaw-gateway -f
 - Set `OPENCLAW_POST_UPDATE_RECONCILE_SCRIPT` (and optionally `OPENCLAW_POST_UPDATE_RECONCILE_INTERPRETER`) if the reconcile script lives somewhere other than the default workspace path.
 - If another wrapper or automation layer launches the post-update hook, set `OPENCLAW_SKIP_WRAPPER_BACKUP=1` for nested `openclaw` calls so internal subcommands do not trigger backup loops.
 - `codex-perf-check.sh` requires v2026.4.x or later — the four settings it checks do not exist in earlier releases.
+- `prompt-truncation-report.sh` and `context-audit.sh` are intentionally separate: one shows runtime truncation warnings, the other shows oversized source files.
+- `session-purge.sh` is session-specific cleanup; `backup-rotate.sh` is the broader backup-file cleanup pass across all of `~/.openclaw`.
 
 ## Running tests
 
