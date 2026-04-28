@@ -15,7 +15,11 @@ SESSION_MONITOR_STAMP="${OPENCLAW_SESSION_MONITOR_STAMP:-$HOME/.openclaw/session
 SESSION_MONITOR_THROTTLE=600
 MAX_RESTART_ATTEMPTS=3
 RESTART_ATTEMPT_WINDOW=900  # 15 minutes
+HEALTH_FAILURE_WINDOW=600    # require repeated unhealthy probes within 10 minutes
+REQUIRED_HEALTH_FAILURES=2
+GATEWAY_WARMUP_GRACE=120     # do not restart a young gateway during startup
 STATE_FILE="$HOME/.openclaw/watchdog-state.json"
+RUN_LOCK_DIR="$HOME/.openclaw/watchdog.lock"
 
 mkdir -p "$LOG_DIR"
 mkdir -p "$(dirname "$STATE_FILE")"
@@ -29,6 +33,33 @@ if [[ -f "$LOG_FILE" ]]; then
 fi
 
 log "── Watchdog tick ────────────────────"
+
+acquire_run_lock() {
+  local now lock_mtime
+
+  if mkdir "$RUN_LOCK_DIR" 2>/dev/null; then
+    trap 'rmdir "$RUN_LOCK_DIR" 2>/dev/null || true' EXIT
+    return 0
+  fi
+
+  now="$(epoch_now)"
+  lock_mtime="$(file_mtime "$RUN_LOCK_DIR" || true)"
+  lock_mtime="${lock_mtime:-0}"
+
+  if (( now - lock_mtime > 900 )); then
+    log "Removing stale watchdog lock"
+    rmdir "$RUN_LOCK_DIR" 2>/dev/null || true
+    if mkdir "$RUN_LOCK_DIR" 2>/dev/null; then
+      trap 'rmdir "$RUN_LOCK_DIR" 2>/dev/null || true' EXIT
+      return 0
+    fi
+  fi
+
+  log "Another watchdog run is active; skipping"
+  exit 0
+}
+
+acquire_run_lock
 
 # Track version changes — write current version to state so heal.sh and check-update.sh
 # can detect when an update occurred
@@ -101,6 +132,7 @@ try:
 except:
     d = {}
 d['restarts'] = []
+d['health_failures'] = []
 d['last_ok'] = __import__('time').time()
 import tempfile, os
 fd, tmp = tempfile.mkstemp(dir=os.path.dirname(state_file), suffix='.tmp')
@@ -108,6 +140,56 @@ with os.fdopen(fd, 'w') as f:
     json.dump(d, f)
 os.replace(tmp, state_file)
 " "$STATE_FILE" 2>/dev/null || true
+}
+
+get_health_failure_count() {
+  python3 -c "
+import sys, json, time
+state_file = sys.argv[1]
+window = int(sys.argv[2])
+try:
+    d = json.load(open(state_file))
+    failures = [a for a in d.get('health_failures', []) if time.time() - a < window]
+    print(len(failures))
+except: print(0)
+" "$STATE_FILE" "$HEALTH_FAILURE_WINDOW" 2>/dev/null || echo 0
+}
+
+record_health_failure() {
+  python3 -c "
+import sys, json, time
+state_file = sys.argv[1]
+window = int(sys.argv[2])
+try:
+    d = json.load(open(state_file))
+except:
+    d = {}
+failures = [a for a in d.get('health_failures', []) if time.time() - a < window]
+failures.append(time.time())
+d['health_failures'] = failures
+d['last_health_failure'] = time.time()
+import tempfile, os
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(state_file), suffix='.tmp')
+with os.fdopen(fd, 'w') as f:
+    json.dump(d, f)
+os.replace(tmp, state_file)
+" "$STATE_FILE" "$HEALTH_FAILURE_WINDOW" 2>/dev/null || true
+}
+
+gateway_pid() {
+  pgrep -x openclaw-gateway 2>/dev/null | head -1 || true
+}
+
+gateway_process_age() {
+  local pid="$1"
+  local age
+
+  age="$(ps -o etimes= -p "$pid" 2>/dev/null | tr -dc '0-9' || true)"
+  if [[ -z "$age" ]]; then
+    echo 999999
+  else
+    echo "$age"
+  fi
 }
 
 maybe_run_session_monitor() {
@@ -137,7 +219,7 @@ maybe_run_session_monitor() {
 GATEWAY_PORT="$(get_gateway_port)"
 GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}/health"
 
-HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 "$GATEWAY_URL" 2>/dev/null || echo "000")
+HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 15 "$GATEWAY_URL" 2>/dev/null || echo "000")
 
 if [[ "$HTTP_STATUS" == "200" ]] || [[ "$HTTP_STATUS" == "401" ]]; then
   # 401 = gateway is up, auth token required (expected in normal operation)
@@ -149,6 +231,25 @@ fi
 
 # ── Gateway is down ───────────────────────────────────────────────────────────
 log "Gateway unreachable (HTTP $HTTP_STATUS)"
+
+GATEWAY_PID="$(gateway_pid)"
+if [[ -n "$GATEWAY_PID" ]]; then
+  GATEWAY_AGE="$(gateway_process_age "$GATEWAY_PID")"
+  if (( GATEWAY_AGE < GATEWAY_WARMUP_GRACE )); then
+    log "Gateway process PID $GATEWAY_PID is only ${GATEWAY_AGE}s old; treating as warm-up and not restarting"
+    exit 0
+  fi
+
+  record_health_failure
+  HEALTH_FAILURE_COUNT="$(get_health_failure_count)"
+  log "Gateway health failures in last ${HEALTH_FAILURE_WINDOW}s: $HEALTH_FAILURE_COUNT"
+  if (( HEALTH_FAILURE_COUNT < REQUIRED_HEALTH_FAILURES )); then
+    log "Deferring restart until ${REQUIRED_HEALTH_FAILURES} consecutive unhealthy probes confirm failure"
+    exit 1
+  fi
+else
+  log "No openclaw-gateway process found; restart may proceed after restart-attempt checks"
+fi
 
 RESTART_COUNT=$(get_restart_count)
 log "Restart attempts in last ${RESTART_ATTEMPT_WINDOW}s: $RESTART_COUNT"
@@ -175,7 +276,7 @@ RESTART_PID=$!
 sleep 8
 
 # Verify it came back up
-HTTP_STATUS_AFTER=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 "$GATEWAY_URL" 2>/dev/null || echo "000")
+HTTP_STATUS_AFTER=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 15 "$GATEWAY_URL" 2>/dev/null || echo "000")
 
 if [[ "$HTTP_STATUS_AFTER" == "200" ]] || [[ "$HTTP_STATUS_AFTER" == "401" ]]; then
   log "Gateway recovered (HTTP $HTTP_STATUS_AFTER)"
@@ -196,7 +297,7 @@ else
 fi
 
 # Final check
-HTTP_FINAL=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 5 "$GATEWAY_URL" 2>/dev/null || echo "000")
+HTTP_FINAL=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 15 "$GATEWAY_URL" 2>/dev/null || echo "000")
 if [[ "$HTTP_FINAL" == "200" ]] || [[ "$HTTP_FINAL" == "401" ]]; then
   log "Gateway recovered after heal.sh"
   clear_restarts
