@@ -235,14 +235,24 @@ check_agent_layer_health() {
   # Counting raw lines triples the apparent rate. Counting distinct timestamps
   # gives one count per real incident (with worst case some adjacent failures
   # collapsing if they fire in the same second — preferred over false positives).
+  #
+  # Implemented as a single awk filter so pipefail doesn't trip when there are
+  # zero matches (grep -E returns 1 on no-match, which under set -euo pipefail
+  # would propagate even though "no failures" is the healthy case).
   local count
   count="$(
-    awk -v cut="$cutoff" '$1 >= cut' "$log" 2>/dev/null \
-      | grep -E 'Codex agent harness failed|codex app-server startup aborted|codex app-server client is closed|failed to load configuration: Model provider|Embedded agent failed before reply|stuck session.*age=[0-9]{3,}' \
-      | awk '{print $1}' \
-      | sort -u \
-      | wc -l \
-      | tr -d ' '
+    awk -v cut="$cutoff" '
+      $1 < cut { next }
+      /Codex agent harness failed/ ||
+      /codex app-server startup aborted/ ||
+      /codex app-server client is closed/ ||
+      /failed to load configuration: Model provider/ ||
+      /Embedded agent failed before reply/ ||
+      /stuck session.*age=[0-9]{3,}/ {
+        seen[$1] = 1
+      }
+      END { print length(seen) }
+    ' "$log" 2>/dev/null
   )"
   count="${count:-0}"
 

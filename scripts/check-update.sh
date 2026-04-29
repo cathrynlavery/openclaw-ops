@@ -116,6 +116,12 @@ FIXES_FAILED=0
 # success (zero exit). On failure, print the captured error and increment
 # FIXES_FAILED. This replaces the prior `cmd 2>/dev/null && fixed || bad`
 # pattern that swallowed errors and lied in the summary (issue #3).
+#
+# IMPORTANT: try_fix always returns 0. Otherwise a failed fix would abort
+# the script under `set -e` before the summary printed (or before subsequent
+# independent fixes ran). Callers that need to branch on individual success
+# should check `try_fix_ok` afterward, not the function's exit code.
+LAST_TRY_FIX_OK=0
 try_fix() {
   local description="$1"
   shift
@@ -124,8 +130,7 @@ try_fix() {
   if "$@" 2>"$stderr_file"; then
     fixed "$description"
     FIXES_APPLIED=$((FIXES_APPLIED + 1))
-    rm -f "$stderr_file"
-    return 0
+    LAST_TRY_FIX_OK=1
   else
     local rc=$?
     bad "Failed to $description (exit $rc)"
@@ -133,10 +138,12 @@ try_fix() {
       sed 's/^/       /' "$stderr_file"
     fi
     FIXES_FAILED=$((FIXES_FAILED + 1))
-    rm -f "$stderr_file"
-    return $rc
+    LAST_TRY_FIX_OK=0
   fi
+  rm -f "$stderr_file"
+  return 0
 }
+try_fix_ok() { (( LAST_TRY_FIX_OK == 1 )); }
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BREAKING CHANGE: v2026.2.24 — Exec policy Layer 2
@@ -242,13 +249,19 @@ if [[ "$AUTH_MODE" == "none" ]]; then
   ISSUES_FOUND=$((ISSUES_FOUND + 1))
   if [[ "$FIX_MODE" == "true" ]]; then
     NEW_TOKEN=$(openssl rand -hex 32)
-    if try_fix "set gateway.auth.mode=token" openclaw config set gateway.auth.mode token; then
-      try_fix "set gateway.auth.token to a new random token" openclaw config set gateway.auth.token "$NEW_TOKEN"
+    # Order matters: write the token FIRST, then flip the mode. If we set
+    # mode=token first and the token write fails, the gateway requires token
+    # auth without a valid one — bricked until manual repair.
+    try_fix "set gateway.auth.token to a new random token" openclaw config set gateway.auth.token "$NEW_TOKEN"
+    if try_fix_ok; then
+      try_fix "set gateway.auth.mode=token" openclaw config set gateway.auth.mode token
+    else
+      warn "Skipping mode=token because token write failed (would brick gateway auth)"
     fi
   else
     warn "To fix:"
-    echo "     openclaw config set gateway.auth.mode token"
     echo "     openclaw config set gateway.auth.token \"\$(openssl rand -hex 32)\""
+    echo "     openclaw config set gateway.auth.mode token"
   fi
 else
   good "gateway.auth.mode = '$AUTH_MODE'"

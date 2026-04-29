@@ -21,10 +21,10 @@ By concentrating restart authority in one place, the operator can reason about r
 
 - Mutex via `~/.openclaw/watchdog.lock/` (mkdir-style lock with 15-minute stale-lock recovery)
 - Restart rate limit: `MAX_RESTART_ATTEMPTS=3` per `RESTART_ATTEMPT_WINDOW=900s` (15 min)
-- Health-failure threshold: `REQUIRED_HEALTH_FAILURES=2` consecutive unhealthy probes within 10 min before restarting (avoids flapping on transient network issues)
+- HTTP `/health` probe with confirmation: when a gateway process exists and HTTP fails, the watchdog requires `REQUIRED_HEALTH_FAILURES=2` consecutive failures within `HEALTH_FAILURE_WINDOW=600s` before restarting. If no `openclaw-gateway` process exists at all, restart proceeds immediately (subject to the rate limit).
 - Warm-up grace: won't restart a process younger than `GATEWAY_WARMUP_GRACE=120s`
-- Escalation path: after sustained failure, runs `heal.sh` instead of restarting again
-- HTTP probe **and** agent-layer log probe (see `check_agent_layer_health()`) — the HTTP probe can return 200 while every agent's `tool_calls=0` because of codex backend hangs that are silent at the HTTP layer
+- Agent-layer log probe via `check_agent_layer_health()` — complements the HTTP probe because HTTP `/health` can return 200 while every agent's `tool_calls=0` due to codex backend hangs that are silent at the HTTP layer
+- Escalation path: when the agent-layer probe fails the failure threshold, the watchdog runs `heal.sh` rather than restarting blindly
 
 ### How alert-only watchdogs should behave
 
@@ -32,9 +32,7 @@ If you're writing a watchdog that detects a specific condition (channel-specific
 
 1. Detect and log to your own log file under `~/.openclaw/logs/`
 2. **Do not** call `openclaw gateway restart`
-3. If the condition is severe and you want recovery, either:
-   - Write a marker file that `watchdog.sh` reads on its next tick and acts on, or
-   - Page the operator via your usual channel (Slack, BlueBubbles, email)
+3. If the condition is severe and you want operator awareness, page through your usual channel (Slack, BlueBubbles, email) rather than restarting. The main `watchdog.sh` will pick up gateway-affecting failures on its next tick if you also log a recognizable pattern to `gateway.err.log`.
 
 The `bluebubbles-stuck-watchdog.sh`-style examples in user installs are good models — they detect, log, and explicitly comment that "Gateway restarts are owned by the OpenClaw watchdog."
 
@@ -43,11 +41,11 @@ The `bluebubbles-stuck-watchdog.sh`-style examples in user installs are good mod
 When a new failure mode appears in `~/.openclaw/logs/gateway.err.log`, the temptation is to write a new watchdog for it. Resist that temptation. Instead:
 
 1. Identify the log line(s) that uniquely fire on the new failure mode
-2. Add the pattern to the alternation in `check_agent_layer_health()` in `watchdog.sh`
-3. **Dedupe by timestamp** — one real failure typically emits 4-5 log lines across `lane=main`, `lane=session:...`, `model-fallback/decision`, and `agents/harness` loggers. Counting raw `grep -c` matches inflates the rate. Pattern: pipe to `awk '{print $1}' | sort -u | wc -l` to count distinct timestamps.
+2. Add the pattern to the alternation in `check_agent_layer_health()` in `watchdog.sh` (today the function uses a single `awk` matcher over `gateway.err.log` so adding a pattern is one new `||` branch)
+3. **Dedupe by timestamp** — one real failure typically emits 4-5 log lines across `lane=main`, `lane=session:...`, `model-fallback/decision`, and `agents/harness` loggers. Counting raw matches inflates the rate by 4-5x and would false-trigger the restart threshold from a single incident. The current implementation aggregates into an awk associative array keyed on the timestamp field — follow that pattern.
 4. Tune the threshold in `check_agent_layer_health()` against historical logs before committing — verify it doesn't false-trigger on a normal day.
 
-This keeps all agent-layer detection in one place that an operator can reason about. The `[2] Detect` issue template in `.github/ISSUE_TEMPLATE/` walks contributors through capturing a new pattern.
+This keeps all agent-layer detection in one place that an operator can reason about. Use the **"Report a new failure pattern"** issue template in `.github/ISSUE_TEMPLATE/new-failure-pattern.md` to capture the symptoms, log signature, and recovery for any new pattern.
 
 ## State files at a glance
 

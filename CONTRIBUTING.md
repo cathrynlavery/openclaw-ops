@@ -22,11 +22,13 @@ The most valuable contribution is a **new failure pattern** the watchdog should 
 If you're submitting a PR for the pattern:
 
 1. Add the new pattern to the alternation in `check_agent_layer_health()` in `scripts/watchdog.sh`
-2. Verify your pattern doesn't false-trigger by running the dedupe pipeline against your local log:
+2. Verify your pattern doesn't false-trigger by running the dedupe pipeline against your local log (BSD `date -v-24H` for macOS; GNU `date -d` for Linux):
    ```bash
-   awk '$1 >= "'"$(date -v-24H '+%Y-%m-%dT%H')"'"' ~/.openclaw/logs/gateway.err.log \
-     | grep -E '<your new pattern>' \
-     | awk '{print $1}' | sort -u | wc -l
+   cutoff="$( (date -u -v-24H '+%Y-%m-%dT%H' 2>/dev/null) || date -u -d '24 hours ago' '+%Y-%m-%dT%H' )"
+   awk -v cut="$cutoff" -v pat='<your new pattern>' '
+     $1 >= cut && $0 ~ pat { seen[$1]=1 }
+     END { print length(seen) }
+   ' ~/.openclaw/logs/gateway.err.log
    ```
 3. Add a test fixture in `tests/run.sh` that simulates the failure log line and asserts the watchdog detects it
 4. Update `docs/troubleshooting.md` with a section explaining the symptoms, cause, detection, and recovery (use the existing entries as templates)

@@ -114,10 +114,14 @@ If that returns "alive", auth is fine and the failure is the gateway's spawn-and
 
 **Detection:**
 ```bash
-# Count distinct failure timestamps in last hour (each real failure emits 4-5 log lines)
-grep "codex app-server client is closed" ~/.openclaw/logs/gateway.err.log \
-  | awk '$1 >= "'"$(date -v-1H '+%Y-%m-%dT%H')"'"' \
-  | awk '{print $1}' | sort -u | wc -l
+# Count distinct failure timestamps in the last hour. Each real failure
+# emits 4-5 log lines across different loggers, so dedupe before counting.
+# date -v-1H is BSD/macOS; date -d '1 hour ago' is GNU/Linux.
+cutoff="$( (date -u -v-1H '+%Y-%m-%dT%H' 2>/dev/null) || date -u -d '1 hour ago' '+%Y-%m-%dT%H' )"
+awk -v cut="$cutoff" '
+  $1 >= cut && /codex app-server client is closed/ { seen[$1]=1 }
+  END { print length(seen) }
+' ~/.openclaw/logs/gateway.err.log
 ```
 
 If you see more than ~3 distinct failure timestamps per hour, the codex subprocess is unstable.

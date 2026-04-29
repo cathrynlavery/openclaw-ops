@@ -692,6 +692,83 @@ EOF
   rm -f "$ROOT_DIR/tests/.session-monitor-stub.sh"
 }
 
+# ── check_agent_layer_health() coverage ──────────────────────────────────────
+# These tests verify three behaviors of the codex/agent-layer detection added
+# in fix/check-update-and-codex-detection:
+#   1. Zero matches must NOT trip set -euo pipefail (was a real risk before
+#      the awk-only matcher replaced grep -E | awk | sort -u | wc -l)
+#   2. Five log lines emitted at the same second from one real failure must
+#      count as 1 (dedupe by timestamp)
+#   3. Three distinct timestamps must count as 3 and trigger the failure path
+
+test_watchdog_agent_layer_dedupes_same_second_failures() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  export CURL_HTTP_STATUS=200
+
+  # One real failure that shows up in 5 different loggers, all the same second
+  local ts
+  ts="$(date -u '+%Y-%m-%dT%H:%M:%S').000Z"
+  cat >"$HOME/.openclaw/logs/gateway.err.log" <<EOF
+${ts} [diagnostic] lane=main codex app-server client is closed
+${ts} [diagnostic] lane=session:agent:atlas:paperclip codex app-server client is closed
+${ts} [model-fallback/decision] codex app-server client is closed
+${ts} [agents/harness] Codex agent harness failed
+${ts} [agent/embedded] Embedded agent failed before reply
+EOF
+
+  # Run watchdog — should treat this as 1 distinct failure, not 5, so well
+  # below the threshold of 3
+  bash "$ROOT_DIR/scripts/watchdog.sh" >/dev/null
+
+  local watchdog_log
+  watchdog_log="$(cat "$HOME/.openclaw/logs/watchdog.log")"
+  assert_not_contains "$watchdog_log" "Agent-layer health:"
+  assert_not_contains "$watchdog_log" "Agent-layer probe failed"
+}
+
+test_watchdog_agent_layer_counts_distinct_timestamps() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  export CURL_HTTP_STATUS=200
+
+  # Three real failures at distinct timestamps (a few seconds apart)
+  local now
+  now="$(date -u '+%s')"
+  local ts1 ts2 ts3
+  ts1="$(date -u -r "$((now - 30))" '+%Y-%m-%dT%H:%M:%S').000Z"
+  ts2="$(date -u -r "$((now - 20))" '+%Y-%m-%dT%H:%M:%S').000Z"
+  ts3="$(date -u -r "$((now - 10))" '+%Y-%m-%dT%H:%M:%S').000Z"
+  cat >"$HOME/.openclaw/logs/gateway.err.log" <<EOF
+${ts1} [diagnostic] lane=main codex app-server client is closed
+${ts2} [diagnostic] lane=main codex app-server client is closed
+${ts3} [diagnostic] lane=main codex app-server client is closed
+EOF
+
+  bash "$ROOT_DIR/scripts/watchdog.sh" >/dev/null || true
+
+  local watchdog_log
+  watchdog_log="$(cat "$HOME/.openclaw/logs/watchdog.log")"
+  assert_contains "$watchdog_log" "Agent-layer health: 3 distinct failure timestamps"
+}
+
+test_watchdog_agent_layer_handles_empty_log_under_pipefail() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  export CURL_HTTP_STATUS=200
+
+  # Empty log — must not abort the watchdog under set -euo pipefail
+  : >"$HOME/.openclaw/logs/gateway.err.log"
+
+  # If the awk matcher regressed to grep -E, the no-match case would return 1
+  # and set -euo pipefail would propagate, exiting non-zero
+  bash "$ROOT_DIR/scripts/watchdog.sh" >/dev/null
+  assert_eq "$?" "0"
+}
+
 test_session_search_sanitizes_and_handles_corruption() {
   setup_fake_env
   trap teardown_fake_env RETURN
@@ -1193,6 +1270,9 @@ run_test test_session_monitor_detects_stuck_runs
 run_test test_session_monitor_ignores_stale_stuck_runs
 run_test test_session_monitor_detects_auth_errors_and_error_clusters_in_long_sessions
 run_test test_watchdog_throttles_session_monitor_invocation
+run_test test_watchdog_agent_layer_dedupes_same_second_failures
+run_test test_watchdog_agent_layer_counts_distinct_timestamps
+run_test test_watchdog_agent_layer_handles_empty_log_under_pipefail
 run_test test_session_search_sanitizes_and_handles_corruption
 run_test test_session_resume_uses_compaction_and_detects_failure
 run_test test_prompt_truncation_report_handles_latest_session_and_json_output
