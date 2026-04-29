@@ -110,6 +110,33 @@ echo ""
 
 ISSUES_FOUND=0
 FIXES_APPLIED=0
+FIXES_FAILED=0
+
+# Run a fix command, capturing stderr. Increment FIXES_APPLIED only on real
+# success (zero exit). On failure, print the captured error and increment
+# FIXES_FAILED. This replaces the prior `cmd 2>/dev/null && fixed || bad`
+# pattern that swallowed errors and lied in the summary (issue #3).
+try_fix() {
+  local description="$1"
+  shift
+  local stderr_file
+  stderr_file="$(mktemp)"
+  if "$@" 2>"$stderr_file"; then
+    fixed "$description"
+    FIXES_APPLIED=$((FIXES_APPLIED + 1))
+    rm -f "$stderr_file"
+    return 0
+  else
+    local rc=$?
+    bad "Failed to $description (exit $rc)"
+    if [[ -s "$stderr_file" ]]; then
+      sed 's/^/       /' "$stderr_file"
+    fi
+    FIXES_FAILED=$((FIXES_FAILED + 1))
+    rm -f "$stderr_file"
+    return $rc
+  fi
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # BREAKING CHANGE: v2026.2.24 — Exec policy Layer 2
@@ -143,7 +170,7 @@ print(f'ok={ok} security={security!r} ask={ask!r} askFallback={ask_fallback!r}')
     ISSUES_FOUND=$((ISSUES_FOUND + 1))
 
     if [[ "$FIX_MODE" == "true" ]]; then
-      python3 -c "
+      try_fix "patch exec-approvals.json defaults" python3 -c "
 import sys, json
 data = json.load(open(sys.argv[1]))
 if 'defaults' not in data:
@@ -153,8 +180,7 @@ data['defaults']['ask'] = 'off'
 data['defaults']['askFallback'] = 'full'
 with open(sys.argv[1], 'w') as f:
     json.dump(data, f, indent=2)
-" "$APPROVALS_JSON" 2>/dev/null && fixed "exec-approvals.json defaults patched" || bad "Failed to patch exec-approvals.json"
-      FIXES_APPLIED=$((FIXES_APPLIED + 1))
+" "$APPROVALS_JSON"
     else
       warn "To fix: run this script with --fix, or manually set:"
       echo "     openclaw approvals set-default security full"
@@ -194,9 +220,8 @@ fi
 if [[ "$EXEC_OK" == "true" ]]; then
   good "tools.exec.security=full, strictInlineEval=false"
 elif [[ "$FIX_MODE" == "true" ]]; then
-  openclaw config set tools.exec.security full 2>/dev/null && fixed "tools.exec.security set to full" || bad "Failed"
-  openclaw config set tools.exec.strictInlineEval false 2>/dev/null && fixed "tools.exec.strictInlineEval set to false" || bad "Failed"
-  FIXES_APPLIED=$((FIXES_APPLIED + 1))
+  try_fix "set tools.exec.security=full" openclaw config set tools.exec.security full
+  try_fix "set tools.exec.strictInlineEval=false" openclaw config set tools.exec.strictInlineEval false
 else
   warn "To fix:"
   echo "     openclaw config set tools.exec.security full"
@@ -216,11 +241,10 @@ if [[ "$AUTH_MODE" == "none" ]]; then
   echo "     What this means: Your gateway will refuse to start after an upgrade."
   ISSUES_FOUND=$((ISSUES_FOUND + 1))
   if [[ "$FIX_MODE" == "true" ]]; then
-    openclaw config set gateway.auth.mode token 2>/dev/null
     NEW_TOKEN=$(openssl rand -hex 32)
-    openclaw config set gateway.auth.token "$NEW_TOKEN" 2>/dev/null
-    fixed "auth.mode set to token with new random token"
-    FIXES_APPLIED=$((FIXES_APPLIED + 1))
+    if try_fix "set gateway.auth.mode=token" openclaw config set gateway.auth.mode token; then
+      try_fix "set gateway.auth.token to a new random token" openclaw config set gateway.auth.token "$NEW_TOKEN"
+    fi
   else
     warn "To fix:"
     echo "     openclaw config set gateway.auth.mode token"
@@ -268,8 +292,19 @@ echo "════════════════════════�
 if [[ "$ISSUES_FOUND" -eq 0 ]]; then
   good "No update-related config issues found. You're good."
 elif [[ "$FIX_MODE" == "true" ]]; then
-  echo -e "${GRN}Applied $FIXES_APPLIED fix(es). Restart the gateway to apply:${RST}"
-  echo "  openclaw gateway restart"
+  if (( FIXES_FAILED > 0 )); then
+    bad "Applied $FIXES_APPLIED fix(es), but $FIXES_FAILED fix(es) FAILED — see errors above."
+    echo ""
+    echo -e "Run ${BLD}bash heal.sh${RST} to retry, or apply the fixes manually using the commands shown."
+    echo "Then restart the gateway: openclaw gateway restart"
+    exit 1
+  elif (( FIXES_APPLIED == 0 )); then
+    warn "$ISSUES_FOUND issue(s) found, but no fixes were applied (check that --fix code paths covered them)."
+    exit 1
+  else
+    echo -e "${GRN}Applied $FIXES_APPLIED fix(es). Restart the gateway to apply:${RST}"
+    echo "  openclaw gateway restart"
+  fi
 else
   warn "$ISSUES_FOUND issue(s) found from this version's breaking changes."
   echo ""
