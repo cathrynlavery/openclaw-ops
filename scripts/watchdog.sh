@@ -215,6 +215,44 @@ maybe_run_session_monitor() {
   fi
 }
 
+check_agent_layer_health() {
+  # Scan recent gateway.err.log for known agent-layer failure patterns. The
+  # HTTP /health probe can return 200 while every agent's tool_calls=0 because
+  # of codex hang / cross-config provider / dead-run patterns. Log-based probe
+  # complements the HTTP probe without spending a real model call per tick.
+  local log="$HOME/.openclaw/logs/gateway.err.log"
+  [[ -r "$log" ]] || return 0
+
+  local cutoff
+  if cutoff="$(date -v-5M '+%Y-%m-%dT%H:%M' 2>/dev/null)"; then
+    :
+  else
+    cutoff="$(date -d '5 minutes ago' '+%Y-%m-%dT%H:%M' 2>/dev/null)" || return 0
+  fi
+
+  # Dedupe by timestamp-second: one real failure emits 4-5 log lines across
+  # lane=main, lane=session:..., model-fallback/decision, embedded-agent loggers.
+  # Counting raw lines triples the apparent rate. Counting distinct timestamps
+  # gives one count per real incident (with worst case some adjacent failures
+  # collapsing if they fire in the same second — preferred over false positives).
+  local count
+  count="$(
+    awk -v cut="$cutoff" '$1 >= cut' "$log" 2>/dev/null \
+      | grep -E 'Codex agent harness failed|codex app-server startup aborted|codex app-server client is closed|failed to load configuration: Model provider|Embedded agent failed before reply|stuck session.*age=[0-9]{3,}' \
+      | awk '{print $1}' \
+      | sort -u \
+      | wc -l \
+      | tr -d ' '
+  )"
+  count="${count:-0}"
+
+  if (( count >= 3 )); then
+    log "Agent-layer health: $count distinct failure timestamps in last 5 min (HTTP probe is OK but agents may be dead)"
+    return 1
+  fi
+  return 0
+}
+
 # ── Gateway health check ──────────────────────────────────────────────────────
 GATEWAY_PORT="$(get_gateway_port)"
 GATEWAY_URL="http://127.0.0.1:${GATEWAY_PORT}/health"
@@ -224,6 +262,18 @@ HTTP_STATUS=$(curl -sf -o /dev/null -w "%{http_code}" --max-time 15 "$GATEWAY_UR
 if [[ "$HTTP_STATUS" == "200" ]] || [[ "$HTTP_STATUS" == "401" ]]; then
   # 401 = gateway is up, auth token required (expected in normal operation)
   log "Gateway healthy (HTTP $HTTP_STATUS)"
+  if ! check_agent_layer_health; then
+    record_health_failure
+    HEALTH_FAILURE_COUNT="$(get_health_failure_count)"
+    log "Agent-layer probe failed; failures in last ${HEALTH_FAILURE_WINDOW}s: $HEALTH_FAILURE_COUNT"
+    if (( HEALTH_FAILURE_COUNT >= REQUIRED_HEALTH_FAILURES )); then
+      log "Agent-layer probe sustained — escalating to heal.sh"
+      if [[ -f "$HEAL_SCRIPT" ]]; then
+        bash "$HEAL_SCRIPT" 2>&1 | tee -a "$LOG_FILE" || log "heal.sh exited with errors"
+      fi
+    fi
+    exit 1
+  fi
   clear_restarts
   maybe_run_session_monitor
   exit 0
