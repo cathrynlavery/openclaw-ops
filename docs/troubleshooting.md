@@ -95,6 +95,42 @@ openclaw config set gateway.auth.token "$(openssl rand -hex 32)"
 openclaw gateway restart
 ```
 
+#### Agent Silent But Gateway Healthy (Codex Backend Failure)
+**Symptoms:**
+- `openclaw gateway status` shows healthy / HTTP `/health` returns 200
+- Agents respond to messages but produce zero tool calls
+- `daily-digest.sh` shows `tool_calls=0` and `$0.00 cost` for every agent
+- Paperclip / channel sessions wedge in `processing` state
+
+**Cause:** The gateway's bundled `codex app-server` subprocess (which bridges to OpenAI Codex models like `gpt-5.4` and `gpt-5.3-codex`) is dropping its stdio connection to the gateway mid-call. The gateway is alive at the HTTP layer but cannot complete any model call.
+
+**This is NOT an authentication failure.** Verify by running codex CLI directly with the same auth state:
+```bash
+CODEX_HOME=~/.openclaw/codex-home codex exec \
+  --skip-git-repo-check --sandbox read-only --color never \
+  "respond with the single word: alive"
+```
+If that returns "alive", auth is fine and the failure is the gateway's spawn-and-pipe-stdio path.
+
+**Detection:**
+```bash
+# Count distinct failure timestamps in last hour (each real failure emits 4-5 log lines)
+grep "codex app-server client is closed" ~/.openclaw/logs/gateway.err.log \
+  | awk '$1 >= "'"$(date -v-1H '+%Y-%m-%dT%H')"'"' \
+  | awk '{print $1}' | sort -u | wc -l
+```
+
+If you see more than ~3 distinct failure timestamps per hour, the codex subprocess is unstable.
+
+**Recovery:**
+```bash
+openclaw gateway restart
+```
+
+This respawns the codex subprocess fresh. The main `watchdog.sh` will detect this pattern automatically and restart on its next tick (every 5 min) — see `check_agent_layer_health()` in `scripts/watchdog.sh`. If you're hitting this often, see `docs/architecture.md` for the convention on extending detection patterns rather than adding a parallel watchdog.
+
+**Known fallback-chain trap:** if your model fallback chain is `gpt-5.4 → gpt-5.3-codex`, both targets route through the same dying subprocess, so the fallback won't save you. Add a non-codex model (Anthropic Claude or local Ollama) as the final tier.
+
 ### Authentication Issues
 
 #### No API Key Found
