@@ -1143,8 +1143,21 @@ test_daily_digest_summarizes_incidents_activity_and_watchdog() {
 
   install_fixture "knox" "session-normal.jsonl"
 
-  printf '[2026-04-04 09:00:00] Gateway healthy (HTTP 200)\n' >"$HOME/.openclaw/logs/watchdog.log"
-  printf '[2026-04-04 09:05:00] Running session monitor\n' >>"$HOME/.openclaw/logs/watchdog.log"
+  local now_ts
+  local monitor_ts
+  now_ts="$(python3 - <<'PY'
+from datetime import datetime, timezone
+print(datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S'))
+PY
+)"
+  monitor_ts="$(python3 - <<'PY'
+from datetime import datetime, timedelta, timezone
+print((datetime.now(timezone.utc) + timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M:%S'))
+PY
+)"
+
+  printf '[%s] Gateway healthy (HTTP 200)\n' "$now_ts" >"$HOME/.openclaw/logs/watchdog.log"
+  printf '[%s] Running session monitor\n' "$monitor_ts" >>"$HOME/.openclaw/logs/watchdog.log"
 
   bash -lc "source '$ROOT_DIR/scripts/lib.sh'; source '$ROOT_DIR/scripts/incident-manager.sh'; incident_report 'agent:knox:retry-loop:exec' 'warning' 'Retry loop: knox calling exec 7 times' '{\"agent\":\"knox\",\"tool\":\"exec\",\"count\":7,\"session_id\":\"sess-normal\"}'"
 
