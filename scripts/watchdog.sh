@@ -281,6 +281,20 @@ if [[ "$HTTP_STATUS" == "200" ]] || [[ "$HTTP_STATUS" == "401" ]]; then
       if [[ -f "$HEAL_SCRIPT" ]]; then
         bash "$HEAL_SCRIPT" 2>&1 | tee -a "$LOG_FILE" || log "heal.sh exited with errors"
       fi
+      # heal.sh fixes config-level issues but only restarts the gateway when
+      # it made changes. Backend-subprocess hangs (e.g. "codex app-server
+      # client is closed") leave HTTP healthy and config valid — so heal.sh
+      # is a no-op and the restart never happens. Force a restart here,
+      # subject to the same rate limit as HTTP-down restarts, so the known
+      # recovery path actually runs.
+      RESTART_COUNT=$(get_restart_count)
+      if (( RESTART_COUNT >= MAX_RESTART_ATTEMPTS )); then
+        log "Agent-layer recovery: $RESTART_COUNT restart attempts in last ${RESTART_ATTEMPT_WINDOW}s — at limit, NOT restarting"
+      else
+        log "Agent-layer recovery: restarting gateway (attempt $((RESTART_COUNT + 1))/$MAX_RESTART_ATTEMPTS in window)"
+        record_restart
+        openclaw gateway restart 2>&1 | tee -a "$LOG_FILE" || log "gateway restart command failed"
+      fi
     fi
     exit 1
   fi

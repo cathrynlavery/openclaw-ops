@@ -734,13 +734,18 @@ test_watchdog_agent_layer_counts_distinct_timestamps() {
 
   export CURL_HTTP_STATUS=200
 
-  # Three real failures at distinct timestamps (a few seconds apart)
-  local now
-  now="$(date -u '+%s')"
+  # Three real failures at distinct timestamps (a few seconds apart).
+  # Use python to format timestamps portably — `date -r <epoch>` is BSD-only;
+  # GNU `date -r` means "reference file" and would fail on Linux CI.
   local ts1 ts2 ts3
-  ts1="$(date -u -r "$((now - 30))" '+%Y-%m-%dT%H:%M:%S').000Z"
-  ts2="$(date -u -r "$((now - 20))" '+%Y-%m-%dT%H:%M:%S').000Z"
-  ts3="$(date -u -r "$((now - 10))" '+%Y-%m-%dT%H:%M:%S').000Z"
+  read -r ts1 ts2 ts3 <<<"$(python3 -c '
+from datetime import datetime, timedelta, timezone
+now = datetime.now(timezone.utc)
+fmt = "%Y-%m-%dT%H:%M:%S.000Z"
+print((now - timedelta(seconds=30)).strftime(fmt),
+      (now - timedelta(seconds=20)).strftime(fmt),
+      (now - timedelta(seconds=10)).strftime(fmt))
+')"
   cat >"$HOME/.openclaw/logs/gateway.err.log" <<EOF
 ${ts1} [diagnostic] lane=main codex app-server client is closed
 ${ts2} [diagnostic] lane=main codex app-server client is closed
@@ -767,6 +772,117 @@ test_watchdog_agent_layer_handles_empty_log_under_pipefail() {
   # and set -euo pipefail would propagate, exiting non-zero
   bash "$ROOT_DIR/scripts/watchdog.sh" >/dev/null
   assert_eq "$?" "0"
+}
+
+# ── check-update.sh --fix coverage (issue #3 regression tests) ───────────────
+# These tests cover the silent-failure bug Tyeth reported in #3 — the script
+# claimed all fixes succeeded even when the underlying commands failed
+# silently. Verify both the no-abort property under set -e and the partial-
+# failure preservation of state.
+
+test_check_update_fix_does_not_abort_on_first_failure_under_set_e() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  # Stub openclaw to fail every config-set call so try_fix has to handle
+  # failure repeatedly. Issue #3 was that the FIRST failed fix could abort
+  # the script under set -e before subsequent fixes ran or the summary printed.
+  local stub_dir="$HOME/.openclaw/.test-stubs"
+  mkdir -p "$stub_dir"
+  cat >"$stub_dir/openclaw" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "config get")
+    case "$3" in
+      "tools.exec.security") echo "broken"; exit 0 ;;
+      "tools.exec.strictInlineEval") echo "true"; exit 0 ;;
+      "gateway.auth.mode") echo "none"; exit 0 ;;
+      *) echo ""; exit 0 ;;
+    esac
+    ;;
+  "config set")
+    echo "simulated config-set failure" >&2
+    exit 1
+    ;;
+  "--version") echo "openclaw 2026.4.11"; exit 0 ;;
+  *) exit 0 ;;
+esac
+STUB
+  chmod +x "$stub_dir/openclaw"
+  export PATH="$stub_dir:$PATH"
+
+  # Ensure approvals.json exists with broken defaults so layer-2 fix tries
+  # to run and also fails (python3 jsonwrite would succeed though, so make
+  # the file unwritable to force failure)
+  printf '{"defaults":{"security":"broken","ask":"on","askFallback":"none"}}' \
+    >"$HOME/.openclaw/exec-approvals.json"
+  chmod 0444 "$HOME/.openclaw/exec-approvals.json"
+
+  local output rc
+  set +e
+  output="$(bash "$ROOT_DIR/scripts/check-update.sh" --fix 2>&1)"
+  rc=$?
+  set -e
+
+  chmod 0644 "$HOME/.openclaw/exec-approvals.json"
+
+  # Script must run to completion and print the summary even after multiple
+  # failed fixes. If it aborted on the first failure, neither line below
+  # would appear.
+  assert_contains "$output" "Failed to "
+  # Summary section — the "════" header proves we reached the end
+  assert_contains "$output" "════════════════════════════════"
+  # FIXES_FAILED must be reported
+  assert_contains "$output" "FAILED"
+  # Non-zero exit because fixes failed
+  if [[ "$rc" == "0" ]]; then
+    fail "expected non-zero exit code from check-update.sh --fix when fixes failed; got 0"
+  fi
+}
+
+test_check_update_auth_token_failure_does_not_flip_mode() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  # Stub openclaw config: auth.token set FAILS, mode set would SUCCEED.
+  # The fix order must be token-first, so a token failure should leave mode
+  # un-flipped (otherwise gateway is bricked: requires token without one).
+  local stub_dir="$HOME/.openclaw/.test-stubs"
+  mkdir -p "$stub_dir"
+  local mode_set_log="$HOME/.openclaw/.test-stubs/mode-set.log"
+  : >"$mode_set_log"
+  cat >"$stub_dir/openclaw" <<STUB
+#!/usr/bin/env bash
+case "\$1 \$2 \$3" in
+  "config get gateway.auth.mode") echo "none"; exit 0 ;;
+  "config get tools.exec.security") echo "full"; exit 0 ;;
+  "config get tools.exec.strictInlineEval") echo "false"; exit 0 ;;
+  "config set gateway.auth.token")
+    echo "token write failed (simulated)" >&2; exit 1 ;;
+  "config set gateway.auth.mode")
+    echo "\$@" >>"$mode_set_log"; exit 0 ;;
+  "--version") echo "openclaw 2026.4.11"; exit 0 ;;
+  *) exit 0 ;;
+esac
+STUB
+  chmod +x "$stub_dir/openclaw"
+  export PATH="$stub_dir:$PATH"
+
+  local output
+  set +e
+  output="$(bash "$ROOT_DIR/scripts/check-update.sh" --fix 2>&1)"
+  set -e
+
+  # The token-set call failed
+  assert_contains "$output" "Failed to set gateway.auth.token"
+  # The mode flip was skipped to avoid bricking the gateway
+  assert_contains "$output" "Skipping mode=token because token write failed"
+  # And openclaw config set gateway.auth.mode was never invoked
+  if [[ -s "$mode_set_log" ]]; then
+    echo "FAIL: gateway.auth.mode was set despite token failure"
+    cat "$mode_set_log"
+    return 1
+  fi
 }
 
 test_session_search_sanitizes_and_handles_corruption() {
@@ -1273,6 +1389,8 @@ run_test test_watchdog_throttles_session_monitor_invocation
 run_test test_watchdog_agent_layer_dedupes_same_second_failures
 run_test test_watchdog_agent_layer_counts_distinct_timestamps
 run_test test_watchdog_agent_layer_handles_empty_log_under_pipefail
+run_test test_check_update_fix_does_not_abort_on_first_failure_under_set_e
+run_test test_check_update_auth_token_failure_does_not_flip_mode
 run_test test_session_search_sanitizes_and_handles_corruption
 run_test test_session_resume_uses_compaction_and_detects_failure
 run_test test_prompt_truncation_report_handles_latest_session_and_json_output
