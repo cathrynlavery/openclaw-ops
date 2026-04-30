@@ -3,3 +3,7 @@
 *.tmp
 .idea/
 .vscode/
+
+# Backup files created by scripts during in-place edits
+*.bak
+*.bak.*
