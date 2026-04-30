@@ -156,13 +156,14 @@ PY
 
   DROPPED="$(echo "$PURGE_RESULT" | grep '^__DROPPED__' | awk '{print $2}')"
   KEPT="$(echo "$PURGE_RESULT" | grep '^__KEPT__' | awk '{print $2}')"
-  REASONS="$(echo "$PURGE_RESULT" | grep '^  - ' | sort | uniq -c)"
+  REASONS="$(echo "$PURGE_RESULT" | grep '^  - ' | sort | uniq -c || true)"
   echo "  index: $KEPT kept, $DROPPED dropped"
   [[ -n "$REASONS" ]] && echo "$REASONS" | sed 's/^/    /'
   TOTAL_ENTRIES_DROPPED=$((TOTAL_ENTRIES_DROPPED + ${DROPPED:-0}))
 
   # ─── 2. Old backup files ────────────────────────────────────────────────
-  mapfile -t BACKUPS < <(ls -t "$SESSIONS_DIR"/sessions.json.bak* 2>/dev/null || true)
+  BACKUPS=()
+  while IFS= read -r line; do BACKUPS+=("$line"); done < <(ls -t "$SESSIONS_DIR"/sessions.json.bak* 2>/dev/null || true)
   if [[ ${#BACKUPS[@]} -gt $KEEP_BACKUPS ]]; then
     TO_DELETE=("${BACKUPS[@]:$KEEP_BACKUPS}")
     BACKUP_BYTES=0
