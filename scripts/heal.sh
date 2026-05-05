@@ -15,13 +15,18 @@ RESTARTED=false
 STATE_FILE="$HOME/.openclaw/watchdog-state.json"
 
 # ── Preflight: check required tools ──────────────────────────────────────────
-require_tools openclaw python3 curl openssl || exit 1
+require_tools openclaw python3 curl openssl pgrep || exit 1
 mkdir -p "$(dirname "$STATE_FILE")"
 
 # Override log helpers to also track in arrays
 log_fixed()  { echo -e "${GRN}[FIXED]${RST}  $1"; FIXED+=("$1"); }
 log_broken() { echo -e "${RED}[BROKEN]${RST} $1"; BROKEN+=("$1"); }
 log_manual() { echo -e "${YLW}[MANUAL]${RST} $1"; MANUAL+=("$1"); }
+
+gateway_running() {
+  pgrep -x openclaw-gateway >/dev/null 2>&1 || \
+    pgrep -f 'openclaw.*gateway' >/dev/null 2>&1
+}
 
 echo ""
 echo -e "${BLD}OpenClaw Self-Heal${RST}"
@@ -100,11 +105,11 @@ with open(sys.argv[1], 'w') as out:
 # ── Step 1: Gateway process ───────────────────────────────────────────────────
 echo ""
 echo -e "${BLD}[1] Gateway process${RST}"
-if ! ps aux | grep -q "[o]penclaw-gateway"; then
+if ! gateway_running; then
   log_info "Gateway not running — attempting start"
   if openclaw gateway start 2>/dev/null; then
     sleep 3
-    if ps aux | grep -q "[o]penclaw-gateway"; then
+    if gateway_running; then
       log_fixed "Gateway started"
       RESTARTED=true
     else

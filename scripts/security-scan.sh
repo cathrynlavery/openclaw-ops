@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # security-scan.sh — OpenClaw config hardening and compliance scoring
-# Run: bash security-scan.sh [--fix] [--drift] [--credentials]
+# Run: bash security-scan.sh [--fix] [--drift] [--credentials] [--include-sessions]
 # Default (no flags): run full compliance check + credential scan
 
 set -euo pipefail
@@ -17,6 +17,7 @@ CONFIG_FILE="$(python3 -c 'import os, sys; print(os.path.expanduser(sys.argv[1])
 FLAG_FIX=false
 FLAG_DRIFT=false
 FLAG_CREDENTIALS=false
+FLAG_INCLUDE_SESSIONS=false
 FLAG_DEFAULT=true   # no flags = full scan
 
 while [[ $# -gt 0 ]]; do
@@ -24,7 +25,8 @@ while [[ $# -gt 0 ]]; do
     --fix)         FLAG_FIX=true;         FLAG_DEFAULT=false; shift ;;
     --drift)       FLAG_DRIFT=true;       FLAG_DEFAULT=false; shift ;;
     --credentials) FLAG_CREDENTIALS=true; FLAG_DEFAULT=false; shift ;;
-    *)             echo "Unknown flag: $1"; echo "Usage: security-scan.sh [--fix] [--drift] [--credentials]"; exit 1 ;;
+    --include-sessions) FLAG_INCLUDE_SESSIONS=true; shift ;;
+    *)             echo "Unknown flag: $1"; echo "Usage: security-scan.sh [--fix] [--drift] [--credentials] [--include-sessions]"; exit 1 ;;
   esac
 done
 
@@ -108,10 +110,14 @@ else:
 
 redact_match() {
   local match="$1"
-  if [[ "$match" =~ ^(.*):([0-9]+): ]]; then
-    printf '%s:%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  local file="${match%%:*}"
+  local rest="${match#*:}"
+  local line="${rest%%:*}"
+
+  if [[ "$line" =~ ^[0-9]+$ ]]; then
+    printf '%s:%s' "$file" "$line"
   else
-    printf '%s' "${match%%:*}"
+    printf '%s' "$file"
   fi
 }
 
@@ -236,6 +242,7 @@ run_credentials() {
   local BACKUP_DIR="$HOME/.openclaw-update-backups"
   local SYSTEMD_USER_DIR="${OPENCLAW_SECURITY_SCAN_SYSTEMD_USER_DIR:-$HOME/.config/systemd/user}"
   local SYSTEMD_SYSTEM_DIR="${OPENCLAW_SECURITY_SCAN_SYSTEMD_SYSTEM_DIR:-/etc/systemd/system}"
+  local MAX_FINDINGS="${OPENCLAW_SECURITY_SCAN_MAX_FINDINGS:-100}"
 
   local scan_roots=()
   for root in "$CONFIG_DIR" "$BACKUP_DIR" "$SYSTEMD_USER_DIR" "$SYSTEMD_SYSTEM_DIR"; do
@@ -288,27 +295,70 @@ run_credentials() {
     -name '*.backup'
   )
 
-  local secret_count=0
-  for pat in "${SECRET_PATTERNS[@]}"; do
-    while IFS= read -r -d '' cfg_file; do
-      while IFS= read -r match; do
-        [[ -z "$match" ]] && continue
-        # Skip false positives
-        if echo "$match" | grep -iqE '(example|template|placeholder|your-|TODO|sample|demo)'; then
+  local cfg_files=()
+  while IFS= read -r -d '' cfg_file; do
+    if [[ "$FLAG_INCLUDE_SESSIONS" != "true" ]]; then
+      case "$cfg_file" in
+        */sessions/*|*/codex-home/sessions/*|*/codex-home/cache/*|*/codex-home/skills/*|*/agent/harness-auth/codex/*/skills/*|*/tasks/*.sqlite|*/tasks/*.sqlite.*|*/logs/*|*/state/heartbeats/*|*/state/*.log|*/scripts/*.bak*|*/scripts/**/*.bak*|*/skills/*|*/npm/*|*/.omx/state/*|*/.playwright-mcp/*|*/plugin-runtime-deps/*|*/node_modules/*|*/canvas/*|*/agents/_archived/*|*/backups/*|*/qmd/xdg-config/*|*/workspace-state.json|*/models.json)
           continue
-        fi
+          ;;
+      esac
+    fi
+    cfg_files+=("$cfg_file")
+  done < <(
+    find "${scan_roots[@]}" -type f \( "${FILE_MATCH_ARGS[@]}" \) -print0 2>/dev/null || true
+  )
+
+  local pattern_file
+  pattern_file="$(mktemp)"
+  printf '%s\n' "${SECRET_PATTERNS[@]}" >"$pattern_file"
+
+  local secret_count=0
+  local secret_reported=0
+  local expected_secret_count=0
+  for cfg_file in "${cfg_files[@]}"; do
+    local match_file
+    match_file="$(mktemp)"
+    grep -I -nH -E -f "$pattern_file" "$cfg_file" >"$match_file" 2>/dev/null || true
+    while IFS= read -r match; do
+      [[ -z "$match" ]] && continue
+      # Skip false positives
+      if echo "$match" | grep -iqE '(example|template|placeholder|your-|TODO|sample|demo)'; then
+        continue
+      fi
+      # Expected auth/credential stores legitimately contain token-shaped
+      # material. They still participate in permission checks below; do not
+      # count them as leaked secrets unless --include-sessions asks for a deep
+      # forensic pass.
+      if [[ "$FLAG_INCLUDE_SESSIONS" != "true" ]]; then
+        case "$cfg_file" in
+          */agent/auth-profiles.json|*/agent/auth-profiles.json.bak*|*/agent/auth.json|*/agent/harness-auth/codex/*/auth.json|*/codex-home/auth.json|*/codex-home/auth.json.bak*|*/credentials/*|*/identity/device.json)
+            ((expected_secret_count++)) || true
+            continue
+            ;;
+        esac
+      fi
+      if (( secret_reported < MAX_FINDINGS )); then
         log_error "  Secret found: $(redact_match "$match")"
-        ((secret_count++)) || true
-      done < <(grep -nH -E "$pat" "$cfg_file" 2>/dev/null || true)
-    done < <(
-      find "${scan_roots[@]}" -type f \( "${FILE_MATCH_ARGS[@]}" \) -print0 2>/dev/null || true
-    )
+        ((secret_reported++)) || true
+      fi
+      ((secret_count++)) || true
+    done <"$match_file"
+    rm -f "$match_file"
   done
+  rm -f "$pattern_file"
+  if (( secret_count > secret_reported )); then
+    log_error "  ... suppressed $((secret_count - secret_reported)) additional secret finding(s); set OPENCLAW_SECURITY_SCAN_MAX_FINDINGS to raise the limit"
+  fi
+  if (( expected_secret_count > 0 )); then
+    log_ok "Ignored $expected_secret_count expected secret-shaped value(s) inside auth/credential stores"
+  fi
 
   if [[ $secret_count -eq 0 ]]; then
     log_ok "No leaked secrets in config files"
   else
     log_error "Found $secret_count secret pattern(s) in config files"
+    deduct 25 "Credential scan found secret pattern(s)"
     ((CRED_ISSUES += secret_count)) || true
   fi
 
@@ -335,14 +385,27 @@ run_credentials() {
     fi
   fi
 
-  # Config files should be 600
+  # Config files should be 600. Do not enforce chmod on installed plugin
+  # package contents/fixtures: those are usually world-readable source files,
+  # not credential stores, and chmodding them creates noisy false positives.
   local perm_issues=0
-  while IFS= read -r cfg_file; do
-    [[ -z "$cfg_file" ]] && continue
+  local perm_reported=0
+  local perm_skipped=0
+  for cfg_file in "${cfg_files[@]}"; do
+    case "$cfg_file" in
+      */agents/shared/plugins/*|*/extensions/*|*/plugins/*|*/plugin-runtime-deps/*|*/node_modules/*)
+        ((perm_skipped++)) || true
+        continue
+        ;;
+    esac
+
     local fperms
     fperms=$(file_perms "$cfg_file")
     if [[ "$fperms" != "600" ]] && [[ "$fperms" != "400" ]]; then
-      log_error "  $cfg_file has permissions $fperms (should be 600)"
+      if (( perm_reported < MAX_FINDINGS )); then
+        log_error "  $cfg_file has permissions $fperms (should be 600)"
+        ((perm_reported++)) || true
+      fi
       ((perm_issues++)) || true
       ((CRED_ISSUES++)) || true
       if [[ "$FLAG_FIX" == "true" ]]; then
@@ -352,12 +415,18 @@ run_credentials() {
         }
       fi
     fi
-  done < <(
-    find "${scan_roots[@]}" -type f \( "${FILE_MATCH_ARGS[@]}" \) 2>/dev/null || true
-  )
+  done
+  if (( perm_skipped > 0 )); then
+    log_ok "Skipped $perm_skipped plugin/runtime source file(s) for permission hardening"
+  fi
+  if (( perm_issues > perm_reported )); then
+    log_error "  ... suppressed $((perm_issues - perm_reported)) additional permission finding(s); set OPENCLAW_SECURITY_SCAN_MAX_FINDINGS to raise the limit"
+  fi
 
   if [[ $perm_issues -eq 0 ]]; then
     log_ok "Config file permissions OK"
+  else
+    deduct 10 "Credential scan found file permission issue(s)"
   fi
 
   if [[ $CRED_ISSUES -eq 0 ]]; then

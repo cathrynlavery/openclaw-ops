@@ -36,7 +36,7 @@ scan_pattern() {
 
   while IFS= read -r line; do
     # Filter false positives (case-insensitive check)
-    if echo "$line" | grep -iqE '(example|template|placeholder|your-|TODO|<\.\.\.>|sample|demo)'; then
+    if echo "$line" | grep -iqE '(example|template|placeholder|your-|TODO|<\.\.\.>|sample|demo|/tests/|tests/run\.sh|fixture|mock|skill-audit\.sh|127\.0\.0\.1|localhost)'; then
       continue
     fi
     log_warn "  $line" >&2

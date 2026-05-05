@@ -12,4 +12,4 @@
 url|gateway|http://127.0.0.1:<PORT>/health
 
 # Process targets
-process|gateway|openclaw-gateway|300
+process|gateway|openclaw.*gateway|300

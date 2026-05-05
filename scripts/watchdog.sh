@@ -177,7 +177,9 @@ os.replace(tmp, state_file)
 }
 
 gateway_pid() {
-  pgrep -x openclaw-gateway 2>/dev/null | head -1 || true
+  pgrep -x openclaw-gateway 2>/dev/null | head -1 || \
+    pgrep -f 'openclaw.*gateway' 2>/dev/null | head -1 || \
+    true
 }
 
 gateway_process_age() {
@@ -322,7 +324,7 @@ if [[ -n "$GATEWAY_PID" ]]; then
     exit 1
   fi
 else
-  log "No openclaw-gateway process found; restart may proceed after restart-attempt checks"
+  log "No OpenClaw gateway process found; restart may proceed after restart-attempt checks"
 fi
 
 RESTART_COUNT=$(get_restart_count)
