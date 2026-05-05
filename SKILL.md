@@ -21,6 +21,8 @@ You are an expert OpenClaw administrator. Use the scripts below to diagnose and 
 
 All scripts live in `scripts/` relative to this skill (typically `~/.openclaw/skills/openclaw-ops/scripts/`). Always use that full path when suggesting commands to users.
 
+On Knox's machine, the canonical ops checkout is `/Users/knox/Developer/openclaw-ops`. Prefer those scripts over the installed skill snapshot under `~/.agents/skills/openclaw-ops`, which can lag behind. If the two differ, treat the Developer checkout as authoritative and sync/reinstall the skill snapshot as follow-up work.
+
 | Script | When to use |
 |--------|-------------|
 | `heal.sh` | First thing on any health check — fixes gateway, auth mode, exec approvals, crons, and stuck sessions in one pass |
@@ -43,7 +45,7 @@ All scripts live in `scripts/` relative to this skill (typically `~/.openclaw/sk
 | `daily-digest.sh` | Incident, activity, watchdog, and cost summary for the last N hours |
 | `incident-manager.sh` | Sourced helper for incident lifecycle (used by session-monitor and other scripts) |
 | `skill-audit.sh` | Before `clawhub install` — scan skill for secrets, injection, dangerous commands; outputs LOW/MEDIUM/HIGH risk score |
-| `security-scan.sh` | Config hardening compliance check (0-100); `--fix` for auto-repair; `--drift` for file change detection; `--credentials` to scan for leaked secrets |
+| `security-scan.sh` | Config hardening compliance check (0-100); `--fix` for auto-repair; `--drift` for file change detection; `--credentials` to scan for leaked secrets; `--include-sessions` includes bulky logs/session/runtime files normally skipped |
 | `codex-perf-check.sh` | Check/fix four GPT-5.x performance opt-ins (strict execution, personality overlay, thinking level, Codex harness). Requires v2026.4.x+. `--fix` to apply. |
 
 ### Quick start examples
@@ -133,6 +135,118 @@ After any version upgrade, run `check-update.sh` to catch breaking config change
 
 ---
 
+## Health Check Playbook
+
+Use this sequence when the user asks whether OpenClaw is working:
+
+```bash
+bash /Users/knox/Developer/openclaw-ops/scripts/heal.sh
+bash /Users/knox/Developer/openclaw-ops/scripts/daily-digest.sh
+openclaw gateway status
+curl -sS -i http://127.0.0.1:51361/ | head -20
+openclaw memory status --deep
+CODEX_HOME=~/.openclaw/codex-home codex exec --skip-git-repo-check --sandbox read-only --color never "respond with: alive" </dev/null
+tail -30 ~/.openclaw/logs/watchdog.log
+tail -80 ~/.openclaw/logs/gateway.err.log
+```
+
+Interpretation rules:
+
+- If `heal.sh` says `Gateway failed to start`, immediately re-check with `openclaw gateway status` and an HTTP probe. `heal.sh` can retain an early failed probe in its final summary even after launchd has restarted the gateway successfully.
+- If `daily-digest.sh` reports auth errors for Codex-backed agents, verify with the Codex CLI command above before calling it auth. Add `</dev/null` to avoid `codex exec` waiting forever on stdin (`Reading additional input from stdin...`). If direct Codex still times out but `openclaw agent --agent knox --session-id health-probe-$(date +%s) --message "Health probe. Reply exactly: OPENCLAW_ALIVE" --thinking low --timeout 240 --json` succeeds, treat the agent runtime as healthy and the direct CLI probe as a separate Codex CLI/harness issue. `codex app-server client is closed` is a bundled Codex subprocess failure, not an OpenClaw auth failure.
+- If `openclaw gateway status` reports an entrypoint mismatch, run critical probes through the same entrypoint launchd is using before trusting CLI-only failures. Example: `/opt/homebrew/opt/node/bin/node /opt/homebrew/lib/node_modules/openclaw/dist/index.js memory status --deep`.
+- If `openclaw channels status --probe` says `Gateway event loop degraded` but every channel still reports `works` and the watchdog stays HTTP 200, treat it as a load signal, not an outage. Check `openclaw status --deep`, active sessions, and recent `liveness warning` lines before restarting.
+- If `openclaw doctor` warns that `openai-codex/*` refs resolve with runtime `pi`, do not automatically “fix” it. On Knox's setup this can be intentional for Codex OAuth/subscription auth through PI. Use `bash scripts/codex-perf-check.sh`; only run `--fix` if the user wants native Codex app-server and accepts the model/runtime migration.
+- A green HTTP/WebSocket gateway check is not enough. Also check channels, stuck sessions, watchdog events, Codex backend health, and memory search readiness.
+- For BlueBubbles, use `~/.openclaw/logs/bluebubbles-watchdog.log`; it is alert-only and should not be expected to restart the gateway.
+
+### Duplicate install cleanup
+
+If CLI probes and the LaunchAgent disagree, check whether multiple OpenClaw installs exist:
+
+```bash
+type -a openclaw
+ls -l "$(command -v openclaw)" /opt/homebrew/bin/openclaw /usr/local/bin/openclaw 2>/dev/null || true
+npm list -g --prefix ~/.npm-global openclaw --depth=0
+npm list -g --prefix /opt/homebrew openclaw --depth=0
+launchctl print gui/$(id -u)/ai.openclaw.gateway | sed -n '1,80p'
+```
+
+Keep the install used by the gateway LaunchAgent unless there is a specific reason to migrate it. Remove stale npm-global duplicates only after confirming launchd is not using them:
+
+```bash
+npm uninstall -g --prefix ~/.npm-global openclaw
+hash -r
+type -a openclaw
+openclaw gateway status
+```
+
+If `/usr/local/bin/openclaw` is a root-owned symlink to the removed install, remove it with an interactive sudo shell or leave it documented if it is not on the active PATH. Do not delete unrelated globally installed npm packages.
+
+### LaunchAgent quarantine reset
+
+Use this when OpenClaw keeps breaking after normal heal/restart cycles and there are custom LaunchAgents in the restart path. The goal is a reversible clean room: leave the main gateway LaunchAgent loaded, quarantine everything custom, and verify before adding anything back.
+
+```bash
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+quarantine="$HOME/.openclaw/quarantine/launchagents/$stamp"
+mkdir -p "$quarantine"
+
+launchctl list | rg 'openclaw|paperclip-openclaw|skills-index' || true
+ls "$HOME/Library/LaunchAgents"/*openclaw*.plist "$HOME/Library/LaunchAgents"/*paperclip-openclaw*.plist 2>/dev/null || true
+```
+
+Move only non-gateway/custom jobs after inspecting the list. Keep `ai.openclaw.gateway.plist` in place unless you are intentionally stopping the gateway too.
+
+```bash
+for plist in \
+  "$HOME/Library/LaunchAgents/ai.openclaw.watchdog.plist" \
+  "$HOME/Library/LaunchAgents/ai.openclaw.gateway-watchdog.plist" \
+  "$HOME/Library/LaunchAgents/co.bestself.openclaw.skills-index.plist" \
+  "$HOME/Library/LaunchAgents/com.bestself.paperclip-openclaw-ops.plist" \
+  "$HOME/Library/LaunchAgents"/com.knox.openclaw-*.plist
+do
+  [[ -e "$plist" ]] || continue
+  label="$(/usr/libexec/PlistBuddy -c 'Print :Label' "$plist" 2>/dev/null || basename "$plist" .plist)"
+  launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+  mv "$plist" "$quarantine/"
+done
+
+launchctl list | rg 'openclaw|paperclip-openclaw|skills-index' || true
+openclaw gateway status
+```
+
+After quarantine, verify `launchctl list` shows only `ai.openclaw.gateway` for OpenClaw unless you deliberately reloaded another job. Restore one quarantined plist at a time only after the gateway and channels are stable.
+
+If the failure was `codex app-server client is closed`, do not treat the tapback/ack as proof the agent is working. Check the session transcript and queue state:
+
+```bash
+openclaw sessions --agent knox --active 15 --json
+tail -80 ~/.openclaw/logs/gateway.err.log | rg 'codex app-server|stuck session|state=processing|queueDepth'
+```
+
+If the active BlueBubbles session is genuinely wedged, back up `sessions.json` and remove or mark only the session index row; do not delete `*.jsonl` transcript history without explicit user approval.
+
+### Local memory dependencies
+
+For `agents.defaults.memorySearch.provider = "local"`, both embeddings and vector search need to be ready. These failures mean the runtime-deps tree is incomplete:
+
+| Error | Meaning | Fix |
+|-------|---------|-----|
+| `Local embeddings unavailable` / missing `node-llama-cpp` | embedding model runtime is absent | Install `node-llama-cpp@3.18.1` into the active `~/.openclaw/plugin-runtime-deps/openclaw-<version>-<hash>` tree |
+| missing `sqlite-vec` / `Vector: unavailable` | vector storage extension is absent | Install `sqlite-vec` into the same active runtime-deps tree |
+
+Install both together so npm does not prune one while adding the other:
+
+```bash
+npm install --prefix ~/.openclaw/plugin-runtime-deps/<active-openclaw-runtime-dir> node-llama-cpp@3.18.1 sqlite-vec
+openclaw memory status --deep
+```
+
+If multiple OpenClaw installs exist, use the runtime-deps hash associated with the service entrypoint, not whichever `openclaw` binary appears first in `PATH`.
+
+---
+
 ## Discover Agents
 
 Before checking sessions, exec approvals, or crons — discover the actual agent list:
@@ -182,10 +296,18 @@ Check `~/.openclaw/exec-approvals.json` `defaults` block: `security: full`, `ask
 - `blocked URL fetch` / `Blocked hostname` → set `allowPrivateNetwork: true` in `channels.bluebubbles`, restart
 - `debounce flush failed: TypeError … null (reading 'trim')` → tapback/reaction/read receipt; check BlueBubbles webhook config
 - `serverUrl` should be `http://127.0.0.1:1234`
+- If BlueBubbles probes green but texts still do not get replies, check disk pressure and session health before changing config: `df -h ~ ~/.openclaw /tmp`, `grep -iE 'ENOSPC|context-overflow|final reply failed|bluebubbles.*long-running|stuck session.*bluebubbles' ~/.openclaw/logs/gateway.err.log | tail -80`.
+- When resetting BlueBubbles sessions, narrow the edit to keys that literally contain `:bluebubbles:` and the affected chat/sender. Do not reset `agent:<id>:main` or unrelated subagents just because `lastChannel` was BlueBubbles.
 
 **Slack:**
 - `invalid_auth` → bot token expired; refresh `botToken` in openclaw.json
-- `socket mode failed to start` → same fix
+- `socket mode failed to start` with `unknown error` can be transient during gateway start/post-attach. If `openclaw channels status --probe` reports Slack `works`, do not rotate tokens or restart blindly.
+
+**Telegram:**
+- Enable both `channels.telegram.enabled=true` and the bundled plugin (`plugins.allow` includes `telegram`, `plugins.entries.telegram.enabled=true`). If only the channel config is set, Telegram may not appear in `channels status`.
+- On v2026.5.2+, do not set `channels.telegram.requireMention`; it is rejected by config validation.
+- Verify final state with `openclaw channels status --probe`; plain status can briefly show `disconnected` before the probe confirms polling works.
+- `sendVoice failed` / `final reply failed: HttpError: Network request for 'sendVoice' failed!` can be a Telegram voice-delivery/network failure, not an agent failure. If the text channel probe is green and the session completed, fall back to text or retry media delivery instead of resetting the gateway.
 
 See [channel-setup.md](docs/channel-setup.md) for all platforms.
 
@@ -209,6 +331,7 @@ openclaw security audit --deep
 
 | Error | Cause | Fix |
 |-------|-------|-----|
+| `FailoverError: Failed to extract accountId from token` | OpenAI-Codex auth file/profile shape or stale per-agent auth cooldown state is broken, even if the gateway is reachable | First prove a working Codex auth source with direct `CODEX_HOME=... codex exec`; back up auth/config/state files; copy/update the working auth context only if intentionally chosen; clear stale `openai-codex:*` cooldowns for active agents; restart gateway and verify with an `openclaw agent` sentinel probe. |
 | `missing_scope` | Slack OAuth scope missing | Add scopes, reinstall app |
 | `Gateway not reachable` | Service not running | `openclaw gateway restart` |
 | `Port 18789 in use` | Port conflict | `openclaw gateway status` |
@@ -226,6 +349,11 @@ openclaw security audit --deep
 ## Security Operations
 
 Run `security-scan.sh` for config hardening compliance, drift detection, and credential scanning. Run `skill-audit.sh` before installing any third-party skill.
+
+Security-scan caveats on Knox's machine:
+- The scanner intentionally scans config-like files for leaked secrets, but it skips permission hardening for installed plugin/runtime package contents because package manifests and fixtures are normally 644. Treat permission findings under `workspace/`, `credentials/`, auth-state, or LaunchAgent/systemd files as higher signal than plugin source files.
+- Prefer `OPENCLAW_SECURITY_SCAN_MAX_FINDINGS=20 bash /Users/knox/Developer/openclaw-ops/scripts/security-scan.sh` for readable output.
+- Use `--include-sessions` only for a deep forensic pass; default mode skips bulky logs, session transcripts, runtime deps, and canvas artifacts to avoid slow/noisy scans.
 
 **Recommended settings:**
 - `gateway.bind`: `loopback`

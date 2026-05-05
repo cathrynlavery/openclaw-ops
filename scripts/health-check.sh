@@ -21,7 +21,7 @@ Targets file format (pipe-delimited):
 
 Examples:
   url|gateway|http://127.0.0.1:<PORT>/health|healthy
-  process|watchdog|openclaw-gateway|300
+  process|gateway|openclaw.*gateway|300
 USAGE
 }
 
@@ -127,7 +127,7 @@ check_url() {
 check_process() {
   local name="$1"
   local pattern="$2"
-  local min_uptime="${3:-300}"
+  local min_uptime="${3:-${OPENCLAW_HEALTH_MIN_UPTIME:-300}}"
   local pids
   local uptime_ok=0
   local best_uptime=0
@@ -210,7 +210,7 @@ if [[ ! -f "$TARGETS_FILE" ]]; then
 url|gateway|http://127.0.0.1:${_port}/health
 
 # Process targets
-process|gateway|openclaw-gateway|300
+process|gateway|openclaw.*gateway|300
 EOF
   printf 'Created targets file: %s (gateway port %s)\n' "$TARGETS_FILE" "$_port" >&2
 fi

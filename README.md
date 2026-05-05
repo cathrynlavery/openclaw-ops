@@ -2,7 +2,7 @@
 
 OpenClaw gateway operations skill for agent environments. Covers health checks, repair workflows, continuous monitoring, session analysis, update-change detection, and security review for a local or self-hosted OpenClaw install.
 
-Tested against OpenClaw `2026.4.11`.
+Tested against OpenClaw `2026.5.4`.
 
 ## What it does
 
@@ -20,7 +20,7 @@ Tested against OpenClaw `2026.4.11`.
 | `scripts/watchdog-uninstall.sh` | Removes the LaunchAgent |
 | `scripts/check-update.sh` | Detects version changes, explains broken config, auto-fix with `--fix` |
 | `scripts/health-check.sh` | Declarative URL/process health checks; auto-generates targets file on first run |
-| `scripts/security-scan.sh` | Config hardening and credential exposure scan (0–100 score) |
+| `scripts/security-scan.sh` | Config hardening and credential exposure scan (0–100 score); skips bulky runtime/log/session history unless `--include-sessions` is passed |
 | `scripts/skill-audit.sh` | Static security audit for third-party skills before installation |
 | `scripts/codex-perf-check.sh` | Check and fix GPT-5.x performance opt-ins that ship disabled by default; `--fix` to apply |
 | `scripts/session-monitor.sh` | Behavioral checks over live session JSONL files; detects retry loops, stuck runs, auth errors |

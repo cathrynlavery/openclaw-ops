@@ -360,6 +360,7 @@ test_security_scan_detects_nested_files_and_permissions() {
   trap teardown_fake_env RETURN
 
   mkdir -p "$HOME/.openclaw/nested/a/b"
+  mkdir -p "$HOME/.openclaw/agents/shared/plugins/example-plugin/.claude-plugin"
   local global_systemd_dir="$HOME/.openclaw-systemd-global"
   mkdir -p "$global_systemd_dir/nested/system"
 
@@ -378,21 +379,28 @@ EOF
 [Unit]
 Description=Global worker
 [Service]
-Environment=OPENCLAW_GATEWAY_TOKEN=sk-1234567890abcdefghijklmn
+Environment=OPENCLAW_GATEWAY_TOKEN=***
+EOF
+
+  cat >"$HOME/.openclaw/agents/shared/plugins/example-plugin/.claude-plugin/plugin.json" <<'EOF'
+{"name":"example-plugin"}
 EOF
 
   chmod 777 "$HOME/.openclaw/nested/a/b/deep-secret.jsonl"
   chmod 777 "$HOME/.openclaw/nested/a/b/deep-worker.service"
   chmod 777 "$global_systemd_dir/nested/system/global-worker.service"
+  chmod 777 "$HOME/.openclaw/agents/shared/plugins/example-plugin/.claude-plugin/plugin.json"
 
   export OPENCLAW_SECURITY_SCAN_SYSTEMD_SYSTEM_DIR="$global_systemd_dir"
 
   local output
-  output="$(bash "$ROOT_DIR/scripts/security-scan.sh" 2>&1)"
+  output="$(bash "$ROOT_DIR/scripts/security-scan.sh" 2>&1 || true)"
   assert_contains "$output" "deep-secret.jsonl"
   assert_contains "$output" "deep-worker.service"
   assert_contains "$output" "global-worker.service"
   assert_contains "$output" "has permissions"
+  assert_contains "$output" "Skipped 1 plugin/runtime source file(s) for permission hardening"
+  assert_not_contains "$output" "plugin.json has permissions"
 }
 
 test_post_update_skips_when_version_matches_state() {
