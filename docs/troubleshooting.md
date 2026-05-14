@@ -43,6 +43,19 @@ openclaw gateway restart
 
 ## Common Issues
 
+### Remediation board for recurring findings
+
+When a check surfaces multiple issues, avoid repeatedly reporting only the loudest subset. Import findings into the remediation board, then move each item through `open`, `in-progress`, `fixed-awaiting-rerun`, `verified-fixed`, `deferred`, or `excluded`.
+
+```bash
+bash scripts/remediation-board.sh import-cron-errors
+bash scripts/remediation-board.sh set cron:<job-id> fixed-awaiting-rerun --note "payload corrected; waiting for scheduled rerun"
+bash scripts/remediation-board.sh close cron:<job-id> --note "next run succeeded"
+```
+
+Use `fixed-awaiting-rerun` when the suspected fix is applied but the cron/job has not produced a clean run yet. Use `deferred` or `excluded` when the operator explicitly parks an item.
+
+
 ### Gateway Issues
 
 #### Gateway Not Running
@@ -441,6 +454,10 @@ bash scripts/cron-optimize.sh --fix --level low
 # Inspect the actual cron error state and payload preview
 bash scripts/cron-error-inspector.sh
 bash scripts/cron-error-inspector.sh --agent atlas --consecutive 2
+
+# Turn surfaced failures into a tracked remediation queue
+bash scripts/remediation-board.sh import-cron-errors
+bash scripts/remediation-board.sh list
 ```
 
 #### Cron Webhook SSRF (Security)

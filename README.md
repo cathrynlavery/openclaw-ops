@@ -28,6 +28,7 @@ Tested against OpenClaw `2026.5.4`.
 | `scripts/session-resume.sh` | Compaction-first markdown resume for a single session, including failure context |
 | `scripts/daily-digest.sh` | Incident, activity, watchdog, and cost summary for the last N hours |
 | `scripts/incident-manager.sh` | Shared incident lifecycle helper (sourced by other scripts) |
+| `scripts/remediation-board.sh` | Durable checklist for surfaced remediation items, status transitions, evidence, and next checks |
 | `scripts/lib.sh` | Shared helpers: logging, port resolution, state files, sanitization (sourced) |
 
 ## Prerequisites
@@ -103,6 +104,10 @@ bash scripts/session-resume.sh ~/.openclaw/agents/knox/sessions/<session>.jsonl
 
 # 24-hour digest: incidents, activity, costs
 bash scripts/daily-digest.sh --hours 24
+
+# Track cron/ops findings to completion
+bash scripts/remediation-board.sh import-cron-errors
+bash scripts/remediation-board.sh list
 ```
 
 ## Watchdog escalation model

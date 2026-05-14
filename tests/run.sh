@@ -1204,6 +1204,84 @@ PY
   assert_contains "$none" "No erroring cron jobs found for agent scout with consecutiveErrors >= 2."
 }
 
+
+test_remediation_board_imports_and_tracks_cron_errors() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  local state_file="$TEST_ROOT/cron-state.json"
+  export OPENCLAW_CRON_STATE_FILE="$state_file"
+  local board_file="$TEST_ROOT/remediation-board.json"
+  "$PYTHON_BIN" - "$state_file" <<'PY'
+import json
+import sys
+import time
+
+state_file = sys.argv[1]
+now_ms = int(time.time() * 1000)
+payload = {
+    "jobs": [
+        {
+            "id": "job-1",
+            "agentId": "atlas",
+            "name": "Atlas timeout",
+            "schedule": {"kind": "cron", "expr": "0 * * * *", "tz": "UTC"},
+            "payload": {"kind": "agentTurn", "model": "gpt-5.4", "message": "A" * 120},
+            "state": {
+                "lastRunAtMs": now_ms - 120000,
+                "lastStatus": "error",
+                "lastRunStatus": "error",
+                "consecutiveErrors": 3,
+                "lastError": "cron: job execution timed out",
+                "lastErrorReason": "timeout",
+            },
+        },
+        {
+            "id": "job-ok",
+            "agentId": "atlas",
+            "name": "Healthy",
+            "payload": {"kind": "agentTurn", "model": "gpt-5.4"},
+            "state": {"lastRunStatus": "ok", "consecutiveErrors": 0},
+        },
+    ]
+}
+with open(state_file, "w", encoding="utf-8") as handle:
+    json.dump(payload, handle)
+PY
+
+  local import_output
+  import_output="$(OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" import-cron-errors 2>&1)"
+  assert_contains "$import_output" "Imported 1 cron error item"
+  assert_contains "$import_output" "cron:job-1"
+  assert_not_contains "$import_output" "job-ok"
+
+  local list_output
+  list_output="$(OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" list 2>&1)"
+  assert_contains "$list_output" "[open] cron:job-1"
+  assert_contains "$list_output" "Cron error: Atlas timeout"
+
+  local set_output
+  set_output="$(OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" set cron:job-1 fixed-awaiting-rerun --note "payload corrected" 2>&1)"
+  assert_contains "$set_output" "[fixed-awaiting-rerun] cron:job-1"
+
+  local close_output
+  close_output="$(OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" close cron:job-1 --note "rerun succeeded" 2>&1)"
+  assert_contains "$close_output" "[verified-fixed] cron:job-1"
+
+  local json_status
+  json_status="$($PYTHON_BIN - "$board_file" <<'PY'
+import json
+import sys
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    data = json.load(handle)
+print(data["items"]["cron:job-1"]["status"])
+print(len(data["items"]["cron:job-1"].get("notes", [])))
+PY
+)"
+  assert_contains "$json_status" "verified-fixed"
+  assert_contains "$json_status" "2"
+}
+
 test_agent_dirs_audit_classifies_and_mutates_candidates() {
   setup_fake_env
   trap teardown_fake_env RETURN
@@ -1404,6 +1482,7 @@ run_test test_session_resume_uses_compaction_and_detects_failure
 run_test test_prompt_truncation_report_handles_latest_session_and_json_output
 run_test test_cron_optimize_reports_and_fixes_missing_light_context
 run_test test_cron_error_inspector_formats_erroring_jobs
+run_test test_remediation_board_imports_and_tracks_cron_errors
 run_test test_agent_dirs_audit_classifies_and_mutates_candidates
 run_test test_backup_rotate_groups_and_prunes_old_backups
 run_test test_context_audit_filters_thresholds_and_agent_scope
