@@ -1338,6 +1338,41 @@ PY
   assert_contains "$none" "No context files at or above 10000 tokens found for agent scout."
 }
 
+
+
+test_workspace_auto_commit_commits_dirty_repo_and_audit_reports_coverage() {
+  setup_fake_env
+
+  local repo="$TEST_ROOT/workspace-alpha"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  git -C "$repo" config user.email "test@example.com"
+  git -C "$repo" config user.name "Test User"
+  printf 'first\n' >"$repo/file.txt"
+  git -C "$repo" add file.txt
+  git -C "$repo" commit -q -m "initial"
+  printf 'second\n' >>"$repo/file.txt"
+
+  dry_output="$(bash "$ROOT_DIR/scripts/workspace-auto-commit.sh" --workspace "$repo" --label alpha --dry-run 2>&1)"
+  assert_contains "$dry_output" "status: dirty"
+  assert_contains "$dry_output" "dry-run: would commit"
+
+  output="$(bash "$ROOT_DIR/scripts/workspace-auto-commit.sh" --workspace "$repo" --label alpha 2>&1)"
+  assert_contains "$output" "status: committed"
+  assert_contains "$output" "auto: hourly alpha snapshot"
+  assert_eq "$(git -C "$repo" status --short --untracked-files=all | wc -l | tr -d ' ')" "0"
+  assert_contains "$(git -C "$repo" log -1 --pretty=%s)" "auto: hourly alpha snapshot"
+
+  export OPENCLAW_CRON_LIST_JSON="{\"jobs\":[{\"name\":\"alpha-auto-commit\",\"payload\":{\"message\":\"bash -l -c '$ROOT_DIR/scripts/workspace-auto-commit.sh --workspace $repo --label alpha'\"}}]}"
+  audit_output="$(bash "$ROOT_DIR/scripts/workspace-git-audit.sh" --path "$repo" 2>&1)"
+  assert_contains "$audit_output" "auto-commit cron covered: 1"
+
+  unset OPENCLAW_CRON_LIST_JSON
+  suggestion_output="$(bash "$ROOT_DIR/scripts/workspace-git-audit.sh" --path "$repo" --show-cron 2>&1 || true)"
+  assert_contains "$suggestion_output" "Suggested cron for $repo"
+  assert_contains "$suggestion_output" "workspace-auto-commit.sh --workspace $repo"
+}
+
 test_daily_digest_summarizes_incidents_activity_and_watchdog() {
   setup_fake_env
   trap teardown_fake_env RETURN
@@ -1407,5 +1442,6 @@ run_test test_cron_error_inspector_formats_erroring_jobs
 run_test test_agent_dirs_audit_classifies_and_mutates_candidates
 run_test test_backup_rotate_groups_and_prunes_old_backups
 run_test test_context_audit_filters_thresholds_and_agent_scope
+run_test test_workspace_auto_commit_commits_dirty_repo_and_audit_reports_coverage
 run_test test_daily_digest_summarizes_incidents_activity_and_watchdog
 printf 'All openclaw-ops tests passed\n'

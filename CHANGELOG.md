@@ -5,6 +5,8 @@ Notable changes to openclaw-ops. Format loosely follows [Keep a Changelog](https
 ## [Unreleased]
 
 ### Added
+- `scripts/workspace-auto-commit.sh` — local-only git snapshot helper for `~/.openclaw/workspace*` repos. It supports targeted `--workspace PATH`, `--all`, `--dry-run`, and JSON output, and never pushes.
+- `scripts/workspace-git-audit.sh` — audits OpenClaw workspace repos for git status, dirty counts, and auto-commit cron coverage; `--show-cron` prints suggested cron setup commands for uncovered repos.
 - `docs/architecture.md` — documents the single-owner restart policy and conventions for extending detection patterns rather than adding parallel watchdogs.
 - `CONTRIBUTING.md` with guidance on what to contribute and what to avoid (especially: don't add new restart-capable watchdogs).
 - `.github/ISSUE_TEMPLATE/new-failure-pattern.md` — structured way for users to report new failure modes worth detecting.

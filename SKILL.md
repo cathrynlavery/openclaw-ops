@@ -42,6 +42,8 @@ On Knox's machine, the canonical ops checkout is `/Users/knox/Developer/openclaw
 | `backup-rotate.sh` | Rotate generic `*.bak*` files across `~/.openclaw`, grouped by the path prefix before `.bak`. Keeps the newest N per group; dry-run by default, `--apply` to delete. |
 | `context-audit.sh` | Audit AGENTS.md, MEMORY.md, and SOUL*.md for file bloat. Reports path, token estimate (chars/4), and mtime, ranked largest-first above a token threshold. |
 | `session-purge.sh` | Reclaim disk + cut session context bloat. Purges stale session index entries, orphan cron/subagent sessions, old `.bak` files, and orphan `.jsonl` transcripts. Dry-run by default; `--apply` to execute. |
+| `workspace-auto-commit.sh` | Commit dirty OpenClaw workspace repos locally. Defaults to `~/.openclaw/workspace`; use `--workspace PATH` for an agent repo or `--all` for every `workspace*` repo. Never pushes. |
+| `workspace-git-audit.sh` | Audit `~/.openclaw/workspace*` repos for git status and auto-commit cron coverage. Use `--show-cron` to print suggested cron add commands for uncovered repos; `--strict` fails on uncovered or dirty repos. |
 | `daily-digest.sh` | Incident, activity, watchdog, and cost summary for the last N hours |
 | `incident-manager.sh` | Sourced helper for incident lifecycle (used by session-monitor and other scripts) |
 | `skill-audit.sh` | Before `clawhub install` — scan skill for secrets, injection, dangerous commands; outputs LOW/MEDIUM/HIGH risk score |
@@ -98,6 +100,11 @@ bash scripts/context-audit.sh --agent atlas --threshold-tokens 10000 --json
 bash scripts/session-purge.sh
 bash scripts/session-purge.sh --apply               # all agents, 7d cutoff
 bash scripts/session-purge.sh --agent atlas --apply # single agent
+
+# Commit and audit OpenClaw workspace repos locally:
+bash scripts/workspace-auto-commit.sh --workspace ~/.openclaw/workspace-kazuo --label kazuo
+bash scripts/workspace-git-audit.sh --show-cron
+bash scripts/workspace-git-audit.sh --strict
 
 # 24-hour digest:
 bash scripts/daily-digest.sh --hours 24

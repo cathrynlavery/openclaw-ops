@@ -23,6 +23,8 @@ Tested against OpenClaw `2026.5.4`.
 | `scripts/security-scan.sh` | Config hardening and credential exposure scan (0–100 score); skips bulky runtime/log/session history unless `--include-sessions` is passed |
 | `scripts/skill-audit.sh` | Static security audit for third-party skills before installation |
 | `scripts/codex-perf-check.sh` | Check and fix GPT-5.x performance opt-ins that ship disabled by default; `--fix` to apply |
+| `scripts/workspace-auto-commit.sh` | Local-only git snapshot helper for OpenClaw workspace repos; defaults to `~/.openclaw/workspace`, supports `--workspace` and `--all`, never pushes |
+| `scripts/workspace-git-audit.sh` | Audits `~/.openclaw/workspace*` repos for git status and auto-commit cron coverage; `--show-cron` prints setup commands for uncovered repos |
 | `scripts/session-monitor.sh` | Behavioral checks over live session JSONL files; detects retry loops, stuck runs, auth errors |
 | `scripts/session-search.sh` | Full-text session search with structured output and secret redaction |
 | `scripts/session-resume.sh` | Compaction-first markdown resume for a single session, including failure context |
@@ -83,6 +85,9 @@ cat ~/.openclaw/logs/heal-incidents.jsonl
 
 # 7. Run health checks — targets file is auto-generated on first run
 bash scripts/health-check.sh --verbose
+
+# 8. Audit workspace git protection and print cron setup suggestions
+bash scripts/workspace-git-audit.sh --show-cron
 ```
 
 ### Gateway port
