@@ -29,8 +29,8 @@ Tested against OpenClaw `2026.5.4`.
 | `scripts/session-search.sh` | Full-text session search with structured output and secret redaction |
 | `scripts/session-resume.sh` | Compaction-first markdown resume for a single session, including failure context |
 | `scripts/daily-digest.sh` | Incident, activity, watchdog, and cost summary for the last N hours |
-| `scripts/incident-manager.sh` | Shared incident lifecycle helper (sourced by other scripts) |
-| `scripts/remediation-board.sh` | Durable checklist for surfaced remediation items, status transitions, evidence, and next checks |
+| `scripts/incident-manager.sh` | Shared machine-readable incident lifecycle helper (sourced by other scripts; state/logs under `~/.openclaw/logs`) |
+| `scripts/remediation-board.sh` | Human/agent repair board for recurring bugs, hacks/workarounds, upstream watches, incident notes, status transitions, evidence, and verification checks |
 | `scripts/lib.sh` | Shared helpers: logging, port resolution, state files, sanitization (sourced) |
 
 ## Prerequisites
@@ -113,6 +113,15 @@ bash scripts/daily-digest.sh --hours 24
 # Track cron/ops findings to completion
 bash scripts/remediation-board.sh import-cron-errors
 bash scripts/remediation-board.sh list
+
+# Track a recurring bug without starting over next time
+bash scripts/remediation-board.sh list --type incident
+bash scripts/remediation-board.sh show telegram-split
+bash scripts/remediation-board.sh add-incident telegram-split "Telegram topic replies split into many messages" --evidence "Observed in forum topic" --next "Check upstream issue and local channel config"
+bash scripts/remediation-board.sh hypothesis telegram-split "Preview draft lane may send instead of edit" --confidence medium
+bash scripts/remediation-board.sh tried telegram-split --step "Checked release notes" --result "Found related Telegram delivery fixes"
+bash scripts/remediation-board.sh workaround telegram-split "Use explicit message.send for topic-visible replies"
+bash scripts/remediation-board.sh export-note telegram-split
 ```
 
 ## Watchdog escalation model

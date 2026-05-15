@@ -1286,6 +1286,102 @@ PY
   assert_contains "$json_status" "2"
 }
 
+test_remediation_board_tracks_incident_notes_and_imports_machine_incidents() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  local board_file="$TEST_ROOT/remediation-board.json"
+  local rem_root="$TEST_ROOT/remediation"
+  local state_file="$TEST_ROOT/incidents-state.json"
+
+  local add_output
+  add_output="$(OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" add-incident telegram-split "Telegram split replies" --severity high --source issue-9 --evidence "Replies split into many messages" --next "Check upstream issue cluster" 2>&1)"
+  assert_contains "$add_output" "telegram-split"
+  assert_contains "$add_output" "incident/high"
+
+  OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" hypothesis telegram-split "Preview draft lane sends instead of edits" --confidence high --next "Inspect Telegram preview lifecycle" >/dev/null
+  OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" tried telegram-split --step "Checked release notes" --result "Found related Telegram fixes" --keep "keep" >/dev/null
+  OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" workaround telegram-split "Use explicit message.send for topic-visible replies" >/dev/null
+  OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" upstream telegram-split https://github.com/cathrynlavery/openclaw-ops/issues/9 >/dev/null
+  OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" close-criteria telegram-split "A topic reply arrives once and in the right thread after a smoke test" >/dev/null
+
+  local note_output
+  note_output="$(OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" OPENCLAW_REMEDIATION_ROOT="$rem_root" bash "$ROOT_DIR/scripts/remediation-board.sh" export-note telegram-split 2>&1)"
+  assert_contains "$note_output" "Wrote incident note:"
+  assert_contains "$note_output" "$rem_root/incidents/telegram-split.md"
+  assert_contains "$(cat "$rem_root/incidents/telegram-split.md")" "Preview draft lane sends instead of edits"
+  assert_contains "$(cat "$rem_root/incidents/telegram-split.md")" "Use explicit message.send"
+  assert_contains "$(cat "$rem_root/incidents/telegram-split.md")" "https://github.com/cathrynlavery/openclaw-ops/issues/9"
+
+  OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" close telegram-split --note "verified once" >/dev/null
+  local reopen_output
+  reopen_output="$(OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" observe telegram-split --evidence "Happened again after restart" 2>&1)"
+  assert_contains "$reopen_output" "[open] telegram-split"
+
+  "$PYTHON_BIN" - "$state_file" <<'PY'
+import json, sys
+state = {
+  "incidents": {
+    "agent:atlas:retry-loop:exec": {
+      "dedupeKey": "agent:atlas:retry-loop:exec",
+      "status": "firing",
+      "severity": "warning",
+      "summary": "Retry loop: atlas calling exec repeatedly"
+    }
+  }
+}
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    json.dump(state, handle)
+PY
+  local import_output
+  import_output="$(OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" OPENCLAW_INCIDENT_STATE_FILE="$state_file" bash "$ROOT_DIR/scripts/remediation-board.sh" import-incidents 2>&1)"
+  assert_contains "$import_output" "Imported 1 machine incident item"
+  assert_contains "$import_output" "incident:agent:atlas:retry-loop:exec"
+
+  local filtered
+  filtered="$(OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" list --type incident --json 2>&1)"
+  assert_contains "$filtered" "telegram-split"
+  assert_contains "$filtered" "incident:agent:atlas:retry-loop:exec"
+}
+
+test_remediation_board_sanitizes_secret_output() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  local board_file="$TEST_ROOT/remediation-board.json"
+  local output
+  output="$(OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" add-incident secret-leak "Secret leak" --evidence "token ghp_1234567890123456789012345678901234567890 appeared in logs" 2>&1)"
+  assert_contains "$output" "[REDACTED_GH_TOKEN]"
+  assert_not_contains "$output" "ghp_1234567890123456789012345678901234567890"
+}
+
+test_remediation_board_rejects_corrupt_board_and_escapes_markdown_tables() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  local board_file="$TEST_ROOT/remediation-board.json"
+  printf '{bad json' >"$board_file"
+  local corrupt_output
+  set +e
+  corrupt_output="$(OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" list 2>&1)"
+  local corrupt_rc=$?
+  set -e
+  [[ "$corrupt_rc" -ne 0 ]] || fail "corrupt board should fail instead of silently resetting"
+  assert_contains "$corrupt_output" "Failed to read JSON state file"
+  assert_contains "$(cat "$board_file")" "{bad json"
+
+  printf '{}' >"$board_file"
+  OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" add-incident md-table "Markdown table escaping" --evidence "Need safe export" >/dev/null
+  OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" bash "$ROOT_DIR/scripts/remediation-board.sh" tried md-table --step $'a | b' --result $'x\ny' --keep $'keep | discard' >/dev/null
+  OPENCLAW_REMEDIATION_BOARD_FILE="$board_file" OPENCLAW_REMEDIATION_ROOT="$TEST_ROOT/remediation" bash "$ROOT_DIR/scripts/remediation-board.sh" export-note md-table >/dev/null
+
+  local note
+  note="$(cat "$TEST_ROOT/remediation/incidents/md-table.md")"
+  assert_contains "$note" 'a \| b'
+  assert_contains "$note" 'x<br>y'
+  assert_contains "$note" 'keep \| discard'
+}
+
 test_agent_dirs_audit_classifies_and_mutates_candidates() {
   setup_fake_env
   trap teardown_fake_env RETURN
@@ -1583,6 +1679,9 @@ run_test test_prompt_truncation_report_handles_latest_session_and_json_output
 run_test test_cron_optimize_reports_and_fixes_missing_light_context
 run_test test_cron_error_inspector_formats_erroring_jobs
 run_test test_remediation_board_imports_and_tracks_cron_errors
+run_test test_remediation_board_tracks_incident_notes_and_imports_machine_incidents
+run_test test_remediation_board_sanitizes_secret_output
+run_test test_remediation_board_rejects_corrupt_board_and_escapes_markdown_tables
 run_test test_agent_dirs_audit_classifies_and_mutates_candidates
 run_test test_backup_rotate_groups_and_prunes_old_backups
 run_test test_context_audit_filters_thresholds_and_agent_scope
