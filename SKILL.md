@@ -32,6 +32,7 @@ On Knox's machine, the canonical ops checkout is `/Users/knox/Developer/openclaw
 | `watchdog-uninstall.sh` | Remove the LaunchAgent |
 | `check-update.sh` | After a version change — detects breaking config changes, explains them; `--fix` to auto-repair |
 | `health-check.sh` | URL/process health checks for gateway-adjacent services; copy `templates/health-targets.conf.example` first |
+| `log-sweep.sh` | Mandatory when the user says “check the logs” or quotes an error — searches gateway logs plus `/tmp/openclaw/openclaw-*.log` / `/private/tmp/openclaw/openclaw-*.log`; use the user’s exact error string first, then the default broad pattern. |
 | `session-monitor.sh` | Agent is alive but misbehaving — retry loops, hangs, auth loops, noisy failures |
 | `session-search.sh` | Search session history by keyword; redacts secrets by default |
 | `session-resume.sh` | Build a readable markdown resume for a single session (compaction-first, then point-of-failure) |
@@ -159,12 +160,14 @@ openclaw gateway status
 curl -sS -i http://127.0.0.1:51361/ | head -20
 openclaw memory status --deep
 CODEX_HOME=~/.openclaw/codex-home codex exec --skip-git-repo-check --sandbox read-only --color never "respond with: alive" </dev/null
+bash /Users/senemaro/.openclaw/workspace/skills/openclaw-ops/scripts/log-sweep.sh
 tail -30 ~/.openclaw/logs/watchdog.log
 tail -80 ~/.openclaw/logs/gateway.err.log
 ```
 
 Interpretation rules:
 
+- If the user says “check the logs” or quotes an error, do not rely on `gateway.err.log` alone. First run `log-sweep.sh --literal '<exact user-visible error>'`; if that is empty, run `log-sweep.sh` with the default broad pattern. Required surfaces: `~/.openclaw/logs/gateway.err.log`, `~/.openclaw/logs/gateway.log`, watchdog/channel logs, `/tmp/openclaw/openclaw-*.log`, and `/private/tmp/openclaw/openclaw-*.log`. Report which surfaces were checked.
 - If `heal.sh` says `Gateway failed to start`, immediately re-check with `openclaw gateway status` and an HTTP probe. `heal.sh` can retain an early failed probe in its final summary even after launchd has restarted the gateway successfully.
 - If `daily-digest.sh` reports auth errors for Codex-backed agents, verify with the Codex CLI command above before calling it auth. Add `</dev/null` to avoid `codex exec` waiting forever on stdin (`Reading additional input from stdin...`). If direct Codex still times out but `openclaw agent --agent knox --session-id health-probe-$(date +%s) --message "Health probe. Reply exactly: OPENCLAW_ALIVE" --thinking low --timeout 240 --json` succeeds, treat the agent runtime as healthy and the direct CLI probe as a separate Codex CLI/harness issue. `codex app-server client is closed` is a bundled Codex subprocess failure, not an OpenClaw auth failure.
 - If `openclaw gateway status` reports an entrypoint mismatch, run critical probes through the same entrypoint launchd is using before trusting CLI-only failures. Example: `/opt/homebrew/opt/node/bin/node /opt/homebrew/lib/node_modules/openclaw/dist/index.js memory status --deep`.
