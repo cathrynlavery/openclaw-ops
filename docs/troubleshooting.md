@@ -49,6 +49,8 @@ Think of `incident-manager.sh` as the smoke alarm and `remediation-board.sh` as 
 
 When a check surfaces multiple issues, avoid repeatedly reporting only the loudest subset. Import findings into the remediation board, then move each item through `open`, `in-progress`, `fixed-awaiting-rerun`, `verified-fixed`, `deferred`, or `excluded`.
 
+Mandatory guardrail: if an investigation finds a real local OpenClaw error/regression, hack/workaround, security concern, or recurring ops finding, create or update a remediation-board item immediately in the same turn. The remediation board is the local repair loop for the installed OpenClaw instance. Upstream issues/PRs are optional metadata; link them with `upstream` only when they exist, but never let an upstream code thread substitute for the local board item and close criteria.
+
 ```bash
 bash scripts/remediation-board.sh import-cron-errors
 bash scripts/remediation-board.sh import-incidents

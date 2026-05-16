@@ -91,6 +91,13 @@ bash scripts/remediation-board.sh import-incidents
 bash scripts/remediation-board.sh list
 bash scripts/remediation-board.sh set cron:<job-id> fixed-awaiting-rerun --note "payload fixed"
 
+# Mandatory: when investigation finds a real local OpenClaw error,
+# regression, hack/workaround, security concern, or recurring ops finding,
+# create/update a board item immediately. The board is the local repair loop;
+# upstream links are optional metadata only when an external fix also exists.
+bash scripts/remediation-board.sh add-incident log-gap "Log sweep missed runtime errors" --evidence "tmp OpenClaw log contained active failure"
+bash scripts/remediation-board.sh close-criteria log-gap "Local log-sweep catches the failure class and the installed workflow is synced"
+
 # Track a recurring bug / incident note (check existing board first):
 bash scripts/remediation-board.sh list --type incident
 bash scripts/remediation-board.sh show telegram-split
@@ -175,6 +182,7 @@ tail -80 ~/.openclaw/logs/gateway.err.log
 
 Interpretation rules:
 
+- If an investigation surfaces a real local OpenClaw error/regression, hack/workaround, security concern, or recurring ops finding, create or update a remediation-board item immediately. This is about the local OpenClaw repair loop, not repository hygiene. Attach evidence and set close criteria; link upstream only if an external issue/PR also exists.
 - If `heal.sh` says `Gateway failed to start`, immediately re-check with `openclaw gateway status` and an HTTP probe. `heal.sh` can retain an early failed probe in its final summary even after launchd has restarted the gateway successfully.
 - If `daily-digest.sh` reports auth errors for Codex-backed agents, verify with the Codex CLI command above before calling it auth. Add `</dev/null` to avoid `codex exec` waiting forever on stdin (`Reading additional input from stdin...`). If direct Codex still times out but `openclaw agent --agent knox --session-id health-probe-$(date +%s) --message "Health probe. Reply exactly: OPENCLAW_ALIVE" --thinking low --timeout 240 --json` succeeds, treat the agent runtime as healthy and the direct CLI probe as a separate Codex CLI/harness issue. `codex app-server client is closed` is a bundled Codex subprocess failure, not an OpenClaw auth failure.
 - If `openclaw gateway status` reports an entrypoint mismatch, run critical probes through the same entrypoint launchd is using before trusting CLI-only failures. Example: `/opt/homebrew/opt/node/bin/node /opt/homebrew/lib/node_modules/openclaw/dist/index.js memory status --deep`.

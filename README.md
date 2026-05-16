@@ -114,6 +114,13 @@ bash scripts/daily-digest.sh --hours 24
 bash scripts/remediation-board.sh import-cron-errors
 bash scripts/remediation-board.sh list
 
+# Mandatory: when investigation finds a real local OpenClaw error,
+# regression, hack/workaround, security concern, or recurring ops finding,
+# create/update a board item immediately. The board is the local repair loop;
+# upstream links are optional metadata only when an external fix also exists.
+bash scripts/remediation-board.sh add-incident log-gap "Log sweep missed runtime errors" --evidence "tmp OpenClaw log contained active failure"
+bash scripts/remediation-board.sh close-criteria log-gap "Local log-sweep catches the failure class and the installed workflow is synced"
+
 # Track a recurring bug without starting over next time
 bash scripts/remediation-board.sh list --type incident
 bash scripts/remediation-board.sh show telegram-split

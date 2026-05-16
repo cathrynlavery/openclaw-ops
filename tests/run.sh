@@ -1344,6 +1344,14 @@ PY
   assert_contains "$filtered" "incident:agent:atlas:retry-loop:exec"
 }
 
+
+test_remediation_board_docs_require_board_item_for_local_ops_findings() {
+  assert_contains "$(cat "$ROOT_DIR/SKILL.md")" "real local OpenClaw error/regression"
+  assert_contains "$(cat "$ROOT_DIR/README.md")" "The board is the local repair loop"
+  assert_contains "$(cat "$ROOT_DIR/docs/troubleshooting.md")" "The remediation board is the local repair loop for the installed OpenClaw instance"
+  assert_contains "$(cat "$ROOT_DIR/docs/troubleshooting.md")" "Upstream issues/PRs are optional metadata"
+}
+
 test_remediation_board_sanitizes_secret_output() {
   setup_fake_env
   trap teardown_fake_env RETURN
@@ -1680,6 +1688,7 @@ run_test test_cron_optimize_reports_and_fixes_missing_light_context
 run_test test_cron_error_inspector_formats_erroring_jobs
 run_test test_remediation_board_imports_and_tracks_cron_errors
 run_test test_remediation_board_tracks_incident_notes_and_imports_machine_incidents
+run_test test_remediation_board_docs_require_board_item_for_local_ops_findings
 run_test test_remediation_board_sanitizes_secret_output
 run_test test_remediation_board_rejects_corrupt_board_and_escapes_markdown_tables
 run_test test_agent_dirs_audit_classifies_and_mutates_candidates
