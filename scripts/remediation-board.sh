@@ -6,7 +6,8 @@ source "$LIB_DIR/lib.sh"
 
 require_tools python3 || exit 1
 
-BOARD_FILE="${OPENCLAW_REMEDIATION_BOARD_FILE:-$HOME/.openclaw/remediation-board.json}"
+OPENCLAW_STATE_HOME="${OPENCLAW_STATE_HOME:-${OPENCLAW_HOST_HOME:-$HOME}}"
+BOARD_FILE="${OPENCLAW_REMEDIATION_BOARD_FILE:-$OPENCLAW_STATE_HOME/.openclaw/remediation-board.json}"
 COMMAND="${1:-}"
 if [[ $# -gt 0 ]]; then
   shift

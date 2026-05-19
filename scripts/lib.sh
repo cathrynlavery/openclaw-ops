@@ -62,12 +62,58 @@ python3() {
   "${OPENCLAW_PYTHON3_CMD[@]}" "$@"
 }
 
+# ── OpenClaw launcher resolution ───────────────────────────────────────────
+# Codex/agent exec sessions can inherit a nested HOME such as
+# ~/.openclaw/agents/<id>/agent/<runtime>/home. In that context, raw
+# `openclaw` probes read the nested config and miss the gateway token. Keep
+# script-local file paths explicit, but run OpenClaw CLI probes against the
+# real owner home unless the caller overrides OPENCLAW_HOST_HOME.
+detect_openclaw_host_home() {
+  local current_home="${HOME:-}"
+  local candidate=""
+
+  if [[ -n "${OPENCLAW_HOST_HOME:-}" ]]; then
+    printf '%s\n' "$OPENCLAW_HOST_HOME"
+    return 0
+  fi
+
+  case "$current_home" in
+    */.openclaw/agents/*/agent/*/home)
+      candidate="${current_home%%/.openclaw/agents/*}"
+      if [[ -n "$candidate" && -f "$candidate/.openclaw/openclaw.json" ]]; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+      ;;
+  esac
+
+  printf '%s\n' "$current_home"
+}
+
+OPENCLAW_HOST_HOME="${OPENCLAW_HOST_HOME:-$(detect_openclaw_host_home)}"
+OPENCLAW_CLI_BIN="$(type -P openclaw 2>/dev/null || true)"
+
+openclaw() {
+  if [[ -z "${OPENCLAW_CLI_BIN:-}" ]]; then
+    echo "Error: missing required tool: openclaw" >&2
+    return 127
+  fi
+
+  if [[ -n "${OPENCLAW_HOST_HOME:-}" && "${OPENCLAW_HOST_HOME}" != "${HOME:-}" && -f "$OPENCLAW_HOST_HOME/.openclaw/openclaw.json" ]]; then
+    HOME="$OPENCLAW_HOST_HOME" "$OPENCLAW_CLI_BIN" "$@"
+  else
+    "$OPENCLAW_CLI_BIN" "$@"
+  fi
+}
+
 # ── Preflight checks ───────────────────────────────────────────────────────
 require_tools() {
   local missing=()
   for tool in "$@"; do
     if [[ "$tool" == "python3" ]]; then
       [[ "$OPENCLAW_PYTHON3_AVAILABLE" -eq 1 ]] || missing+=("$tool")
+    elif [[ "$tool" == "openclaw" ]]; then
+      [[ -n "${OPENCLAW_CLI_BIN:-}" ]] || missing+=("$tool")
     else
       command -v "$tool" &>/dev/null || missing+=("$tool")
     fi
@@ -233,7 +279,8 @@ get_gateway_port() {
   python3 -c "
 import json, sys, os
 try:
-    cfg = os.path.expanduser('~/.openclaw/openclaw.json')
+    home = os.environ.get('OPENCLAW_HOST_HOME') or os.path.expanduser('~')
+    cfg = os.path.join(home, '.openclaw', 'openclaw.json')
     d = json.load(open(cfg))
     print(d.get('gateway', {}).get('port', 18789))
 except:
