@@ -134,28 +134,32 @@ capture_state() {
   fi
 
   { launchctl print "gui/$(id -u)/ai.openclaw.gateway" 2>/dev/null || true; type -a openclaw 2>/dev/null || true; command -v openclaw 2>/dev/null || true; } \
-    | grep -E '/tmp|/private/tmp' \
+    | grep -Ei 'openclaw.*(/tmp|/private/tmp)|(/tmp|/private/tmp).*openclaw' \
     | sanitize_sensitive >"$state_dir/temp-runtime-refs.txt" || true
 }
 
 write_preflight_report() {
   local report="$CUTOVER_DIR/CUTOVER.md"
   local current_version
+  local created_at
+  local release_notes
   current_version="$(get_openclaw_version)"
-  cat >"$report" <<EOF
+  created_at="$(iso_now)"
+  release_notes="${RELEASE_NOTES:-not supplied}"
+  cat >"$report" <<'EOF'
 # OpenClaw Update Cutover
 
-- Created: $(iso_now)
-- Target release: $TARGET_VERSION
-- Lane: $LANE
-- App scope: $APP_SCOPE
-- Current CLI/gateway version: $current_version
-- Release notes: ${RELEASE_NOTES:-not supplied}
-- Cutover dir: $CUTOVER_DIR
+- Created: __CREATED_AT__
+- Target release: __TARGET_VERSION__
+- Lane: __LANE__
+- App scope: __APP_SCOPE__
+- Current CLI/gateway version: __CURRENT_VERSION__
+- Release notes: __RELEASE_NOTES__
+- Cutover dir: __CUTOVER_DIR__
 
 ## Gap closure this report enforces
 
-The old post-update path starts after \\`openclaw update\\`; this cutover gate adds the missing before-change decisions:
+The old post-update path starts after `openclaw update`; this cutover gate adds the missing before-change decisions:
 
 - [ ] Release notes reviewed against current setup
 - [ ] Required fixes are confirmed present or explicitly accepted as missing
@@ -182,7 +186,7 @@ Classify each relevant release-note item:
 
 ## Hack/workaround audit
 
-Hack audit source: \\`$HACK_AUDIT_LOG\\`
+Hack audit source: `__HACK_AUDIT_LOG__`
 
 - [ ] No relevant hacks found, or no audit file exists
 - [ ] Relevant hacks reviewed and classified below
@@ -197,11 +201,11 @@ High-risk if it touches runtime paths, launch behavior, cron behavior, auth/secr
 
 Do not run the update until these are true:
 
-- [ ] Lane is correct: $LANE
-- [ ] App scope is correct: $APP_SCOPE
+- [ ] Lane is correct: __LANE__
+- [ ] App scope is correct: __APP_SCOPE__
 - [ ] One runtime target path selected
 - [ ] Rollback target/path confirmed
-- [ ] Baseline files under \\`before/\\` reviewed
+- [ ] Baseline files under `before/` reviewed
 - [ ] No unexpected /tmp or /private/tmp runtime references
 - [ ] Single restart/update plan prepared
 
@@ -209,10 +213,10 @@ Do not run the update until these are true:
 
 Run after update:
 
-\`\`\`bash
+```bash
 bash scripts/post-update.sh
-bash scripts/update-cutover.sh --post --target-version "$TARGET_VERSION" --lane "$LANE" --app-scope "$APP_SCOPE" --cutover-dir "$CUTOVER_DIR"
-\`\`\`
+bash scripts/update-cutover.sh --post --target-version "__TARGET_VERSION__" --lane "__LANE__" --app-scope "__APP_SCOPE__" --cutover-dir "__CUTOVER_DIR__"
+```
 
 Pass criteria:
 
@@ -231,6 +235,27 @@ Pass criteria:
 
 If verification fails, stop layering fixes. Roll back to the prior known-good runtime target, then verify restored health.
 EOF
+
+  python3 - "$report" "$created_at" "$TARGET_VERSION" "$LANE" "$APP_SCOPE" "$current_version" "$release_notes" "$CUTOVER_DIR" "$HACK_AUDIT_LOG" <<'PY'
+from pathlib import Path
+import sys
+
+report = Path(sys.argv[1])
+replacements = {
+    "__CREATED_AT__": sys.argv[2],
+    "__TARGET_VERSION__": sys.argv[3],
+    "__LANE__": sys.argv[4],
+    "__APP_SCOPE__": sys.argv[5],
+    "__CURRENT_VERSION__": sys.argv[6],
+    "__RELEASE_NOTES__": sys.argv[7],
+    "__CUTOVER_DIR__": sys.argv[8],
+    "__HACK_AUDIT_LOG__": sys.argv[9],
+}
+text = report.read_text(encoding="utf-8")
+for marker, value in replacements.items():
+    text = text.replace(marker, value)
+report.write_text(text, encoding="utf-8")
+PY
 
   if [[ -f "$HACK_AUDIT_LOG" ]]; then
     {

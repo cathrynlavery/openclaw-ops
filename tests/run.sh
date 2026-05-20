@@ -715,6 +715,8 @@ test_update_cutover_preflight_captures_gates_without_running_update() {
   trap teardown_fake_env RETURN
 
   local cutover_dir="$HOME/.openclaw/update-cutovers/test-cutover"
+  local call_log="$HOME/.openclaw/openclaw-calls.log"
+  export OPENCLAW_CALL_LOG="$call_log"
   export OPENCLAW_HACK_AUDIT_LOG="$HOME/.openclaw/hack-audit-log.md"
   printf 'custom runtime path workaround\n' >"$OPENCLAW_HACK_AUDIT_LOG"
 
@@ -735,6 +737,8 @@ test_update_cutover_preflight_captures_gates_without_running_update() {
   assert_contains "$report" "Hack/workaround audit reviewed"
   assert_contains "$report" "Rollback target/path confirmed"
   assert_contains "$report" "custom runtime path workaround"
+  assert_not_contains "$(cat "$call_log")" "openclaw|skip=0|update"
+  unset OPENCLAW_CALL_LOG
 }
 
 test_update_cutover_post_fails_on_version_mismatch() {
@@ -761,6 +765,12 @@ test_update_cutover_post_passes_when_version_matches() {
   trap teardown_fake_env RETURN
 
   local cutover_dir="$HOME/.openclaw/update-cutovers/test-cutover-post-pass"
+  local stable_bin_dir="${OPENCLAW_TEST_STABLE_BIN_DIR:-$ROOT_DIR/.test-openclaw-bin}"
+  mkdir -p "$stable_bin_dir"
+  cp "$TEST_ROOT/bin/openclaw" "$stable_bin_dir/openclaw"
+  chmod +x "$stable_bin_dir/openclaw"
+  PATH="$stable_bin_dir:${PATH#*:}"
+  export PATH
   export OPENCLAW_STATUS_VERSION="v2026.5.12"
 
   local output
