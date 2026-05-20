@@ -177,7 +177,7 @@ openclaw gateway status
 curl -sS -i http://127.0.0.1:51361/ | head -20
 openclaw memory status --deep
 CODEX_HOME=~/.openclaw/codex-home codex exec --skip-git-repo-check --sandbox read-only --color never "respond with: alive" </dev/null
-bash /Users/senemaro/.openclaw/workspace/skills/openclaw-ops/scripts/log-sweep.sh
+bash /Users/knox/Developer/openclaw-ops/scripts/log-sweep.sh
 tail -30 ~/.openclaw/logs/watchdog.log
 tail -80 ~/.openclaw/logs/gateway.err.log
 ```
