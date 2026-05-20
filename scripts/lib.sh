@@ -91,6 +91,7 @@ detect_openclaw_host_home() {
 }
 
 OPENCLAW_HOST_HOME="${OPENCLAW_HOST_HOME:-$(detect_openclaw_host_home)}"
+export OPENCLAW_HOST_HOME
 OPENCLAW_CLI_BIN="$(type -P openclaw 2>/dev/null || true)"
 
 openclaw() {

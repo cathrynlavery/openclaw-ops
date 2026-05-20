@@ -491,7 +491,9 @@ test_lib_openclaw_wrapper_uses_host_home_from_nested_agent_home() {
   local operator_home="$TEST_ROOT/operator"
   local nested_home="$operator_home/.openclaw/agents/main/agent/codex/home"
   mkdir -p "$operator_home/.openclaw" "$nested_home" "$TEST_ROOT/bin"
-  printf '{"gateway":{"port":18789}}\n' >"$operator_home/.openclaw/openclaw.json"
+  printf '{"gateway":{"port":12345}}\n' >"$operator_home/.openclaw/openclaw.json"
+  mkdir -p "$nested_home/.openclaw"
+  printf '{"gateway":{"port":99999}}\n' >"$nested_home/.openclaw/openclaw.json"
 
   cat >"$TEST_ROOT/bin/openclaw" <<'EOF'
 #!/usr/bin/env bash
@@ -515,10 +517,12 @@ EOF
     source "$ROOT_DIR/scripts/lib.sh"
     printf 'host=%s\n' "$OPENCLAW_HOST_HOME"
     printf 'cli-home=%s\n' "$(openclaw show-home)"
+    printf 'gateway-port=%s\n' "$(get_gateway_port)"
   )"
 
   assert_contains "$output" "host=$operator_home"
   assert_contains "$output" "cli-home=$operator_home"
+  assert_contains "$output" "gateway-port=12345"
 }
 
 test_health_check_passes_for_valid_targets() {
