@@ -8,6 +8,8 @@ require_tools python3 || exit 1
 
 OPENCLAW_STATE_HOME="${OPENCLAW_STATE_HOME:-${OPENCLAW_HOST_HOME:-$HOME}}"
 BOARD_FILE="${OPENCLAW_REMEDIATION_BOARD_FILE:-$OPENCLAW_STATE_HOME/.openclaw/remediation-board.json}"
+REMEDIATION_ROOT="${OPENCLAW_REMEDIATION_ROOT:-$OPENCLAW_STATE_HOME/.openclaw/remediation}"
+INCIDENT_STATE_FILE="${OPENCLAW_INCIDENT_STATE_FILE:-$OPENCLAW_STATE_HOME/.openclaw/logs/incidents-state.json}"
 COMMAND="${1:-}"
 if [[ $# -gt 0 ]]; then
   shift
@@ -21,14 +23,49 @@ Commands:
   import-cron-errors [--agent NAME] [--consecutive N]
       Import current `openclaw cron list --all --json` failures as tracked items.
 
+  import-incidents [--state-file FILE]
+      Import machine incidents from incident-manager state into the remediation board.
+
   add ID TITLE [--source SOURCE] [--evidence TEXT] [--next TEXT]
       Add or update a manual remediation item.
 
-  set ID STATUS [--note TEXT] [--next TEXT]
-      Update item status. Status must be one of:
-      open, in-progress, fixed-awaiting-rerun, verified-fixed, deferred, excluded
+  add-incident ID TITLE [--severity low|medium|high|critical] [--source SOURCE] [--evidence TEXT] [--next TEXT]
+  add-hack ID TITLE [--severity low|medium|high|critical] [--source SOURCE] [--evidence TEXT] [--next TEXT]
+  add-upstream-watch ID TITLE [--severity low|medium|high|critical] [--source SOURCE] [--evidence TEXT] [--next TEXT]
+  add-upgrade-blocker ID TITLE [--severity low|medium|high|critical] [--source SOURCE] [--evidence TEXT] [--next TEXT]
+  add-security-hardening ID TITLE [--severity low|medium|high|critical] [--source SOURCE] [--evidence TEXT] [--next TEXT]
+      Add typed remediation items for recurring bugs, workarounds, upstream watches, upgrade blockers, or hardening tasks.
 
-  list [--status STATUS|all] [--json|--markdown]
+  observe ID --evidence TEXT [--next TEXT]
+      Append a new observation/evidence item and reopen closed/deferred items.
+
+  tried ID --step TEXT --result TEXT [--keep TEXT]
+      Record a diagnostic or fix attempt.
+
+  hypothesis ID TEXT [--confidence low|medium|high] [--next TEXT]
+      Record or update an investigation hypothesis.
+
+  workaround ID TEXT
+      Set the current working workaround/rule.
+
+  upstream ID URL
+      Link an upstream issue/PR/release note.
+
+  close-criteria ID TEXT
+      Set evidence required before the item can be closed.
+
+  link-note ID PATH
+      Link an existing markdown incident/remediation note.
+
+  export-note ID [--path PATH]
+      Write a markdown incident/remediation note. Defaults to
+      $OPENCLAW_REMEDIATION_ROOT/incidents/<id>.md.
+
+  set ID STATUS [--note TEXT] [--next TEXT]
+      Update status. Status: open, in-progress, fixed-awaiting-rerun,
+      verified-fixed, deferred, excluded
+
+  list [--status STATUS|all] [--type TYPE|all] [--json|--markdown]
       List tracked items. Markdown output is default.
 
   show ID [--json|--markdown]
@@ -41,8 +78,9 @@ Options:
   --board FILE  Override board path. Defaults to ~/.openclaw/remediation-board.json
 
 Purpose:
-  Turn surfaced ops findings into a durable queue: open -> fixed-awaiting-rerun
-  -> verified-fixed/deferred/excluded, with evidence, notes, and next checks.
+  Turn surfaced ops findings into a durable repair board: smoke alarms from
+  incident-manager stay machine-readable, while recurring bugs, hacks,
+  upstream watches, and fixes get human-readable notes and verification state.
 USAGE
 }
 
@@ -61,7 +99,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$COMMAND" in
-  import-cron-errors|add|set|list|show|close|-h|--help) ;;
+  import-cron-errors|import-incidents|add|add-incident|add-hack|add-upstream-watch|add-upgrade-blocker|add-security-hardening|set|list|show|close|observe|tried|hypothesis|workaround|upstream|close-criteria|link-note|export-note|-h|--help) ;;
   "") usage; exit 1 ;;
   *) printf 'Unknown command: %s\n' "$COMMAND" >&2; usage >&2; exit 1 ;;
 esac
@@ -71,36 +109,55 @@ if [[ "$COMMAND" == "-h" || "$COMMAND" == "--help" ]]; then
   exit 0
 fi
 
-mkdir -p "$(dirname "$BOARD_FILE")"
+mkdir -p "$(dirname "$BOARD_FILE")" "$REMEDIATION_ROOT"
 
-python_board() {
-  python3 - "$BOARD_FILE" "$VALID_STATUSES" "$COMMAND" "$@" <<'PY'
+python3 - "$BOARD_FILE" "$VALID_STATUSES" "$COMMAND" "$REMEDIATION_ROOT" "$INCIDENT_STATE_FILE" "$@" <<'PY' | sanitize_sensitive
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
 
-board_file, valid_statuses_text, command, *args = sys.argv[1:]
+board_file, valid_statuses_text, command, remediation_root, incident_state_file, *args = sys.argv[1:]
 valid_statuses = set(valid_statuses_text.split())
+valid_types = {"manual", "incident", "hack", "upstream-watch", "cron-error", "upgrade-blocker", "security-hardening"}
+valid_severities = {"low", "medium", "high", "critical"}
 
 
 def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def load_json(path, default):
+    if not os.path.exists(path):
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except Exception as exc:
+        raise SystemExit(f"Failed to read JSON state file {path}: {exc}")
+
+
 def load_board():
-    if not os.path.exists(board_file):
-        return {"version": 1, "items": {}, "updatedAt": None}
-    with open(board_file, "r", encoding="utf-8") as handle:
-        data = json.load(handle)
-    data.setdefault("version", 1)
+    data = load_json(board_file, {"version": 2, "items": {}, "updatedAt": None})
+    data.setdefault("version", 2)
     data.setdefault("items", {})
+    # Backward compatible migration for v1 boards.
+    for item in data["items"].values():
+        item.setdefault("type", "manual")
+        item.setdefault("severity", "medium")
+        item.setdefault("notes", [])
+        item.setdefault("observations", [])
+        item.setdefault("hypotheses", [])
+        item.setdefault("stepsTried", [])
+        item.setdefault("upstream", [])
     return data
 
 
 def write_board(board):
+    board["version"] = max(int(board.get("version", 1) or 1), 2)
     board["updatedAt"] = now_iso()
     directory = os.path.dirname(board_file) or "."
     os.makedirs(directory, exist_ok=True)
@@ -134,6 +191,48 @@ def parse_options(tokens, allowed):
     return opts, rest
 
 
+def ensure_status(status):
+    if status not in valid_statuses:
+        raise SystemExit(f"Invalid status: {status}. Expected one of: {', '.join(sorted(valid_statuses))}")
+
+
+def ensure_type(item_type):
+    if item_type not in valid_types:
+        raise SystemExit(f"Invalid type: {item_type}. Expected one of: {', '.join(sorted(valid_types))}")
+
+
+def ensure_severity(severity):
+    if severity not in valid_severities:
+        raise SystemExit(f"Invalid severity: {severity}. Expected one of: {', '.join(sorted(valid_severities))}")
+
+
+def slugify(value):
+    value = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-._")
+    return value.lower() or "remediation-item"
+
+
+
+def sanitize_value(value):
+    if value is None:
+        return value
+    text = str(value)
+    patterns = [
+        (re.compile(r"sk-[A-Za-z0-9-]{20,}"), "[REDACTED_API_KEY]"),
+        (re.compile(r"xoxb-[0-9A-Za-z-]+"), "[REDACTED_SLACK_TOKEN]"),
+        (re.compile(r"ghp_[A-Za-z0-9]{36,}"), "[REDACTED_GH_TOKEN]"),
+        (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED_AWS_KEY]"),
+        (re.compile(r"Bearer\s+[A-Za-z0-9._-]{20,}", re.IGNORECASE), "Bearer [REDACTED]"),
+        (re.compile(r"(password|secret|token|api_key|apiKey|auth_token)=([^;\s]+)", re.IGNORECASE), r"\1=[REDACTED]"),
+    ]
+    for pattern, replacement in patterns:
+        text = pattern.sub(replacement, text)
+    return text
+
+def truncate(value, limit):
+    value = " ".join(str(value or "").split())
+    return value if len(value) <= limit else value[: limit - 3] + "..."
+
+
 def summarize_payload(payload):
     if not isinstance(payload, dict):
         return ""
@@ -145,10 +244,7 @@ def summarize_payload(payload):
         parts.append(f"lightContext={payload['lightContext']}")
     message = payload.get("message") or payload.get("text") or ""
     if message:
-        message = " ".join(str(message).split())
-        if len(message) > 80:
-            message = message[:77] + "..."
-        parts.append(message)
+        parts.append(truncate(message, 80))
     return " | ".join(parts)
 
 
@@ -167,50 +263,71 @@ def schedule_text(schedule):
     return kind
 
 
-def upsert_item(board, item_id, title, source, evidence, next_check, status=None):
+def normalize_item(current):
+    current.setdefault("type", "manual")
+    current.setdefault("severity", "medium")
+    current.setdefault("notes", [])
+    current.setdefault("observations", [])
+    current.setdefault("hypotheses", [])
+    current.setdefault("stepsTried", [])
+    current.setdefault("upstream", [])
+    return current
+
+
+def upsert_item(board, item_id, title, source, evidence, next_check, status=None, item_type="manual", severity="medium"):
+    ensure_type(item_type)
+    ensure_severity(severity)
     items = board.setdefault("items", {})
     current = items.get(item_id)
     ts = now_iso()
     if current is None:
         current = {
             "id": item_id,
-            "title": title,
+            "title": sanitize_value(title),
+            "type": item_type,
+            "severity": severity,
             "status": status or "open",
-            "source": source,
+            "source": sanitize_value(source),
             "createdAt": ts,
             "updatedAt": ts,
             "lastObservedAt": ts,
-            "evidence": evidence,
-            "next": next_check,
+            "evidence": sanitize_value(evidence),
+            "next": sanitize_value(next_check),
             "notes": [],
             "observations": [],
+            "hypotheses": [],
+            "stepsTried": [],
+            "upstream": [],
         }
         items[item_id] = current
     else:
+        normalize_item(current)
         old_status = current.get("status", "open")
         if old_status in {"verified-fixed", "deferred", "excluded"} and (status or "open") == "open":
             current["status"] = "open"
-            current.setdefault("notes", []).append({
-                "at": ts,
-                "note": f"Reopened by new observation; previous status was {old_status}.",
-            })
+            current.setdefault("notes", []).append({"at": ts, "note": f"Reopened by new observation; previous status was {old_status}."})
         elif status:
             current["status"] = status
         current.update({
-            "title": title or current.get("title"),
-            "source": source or current.get("source"),
+            "title": sanitize_value(title) or current.get("title"),
+            "type": item_type or current.get("type", "manual"),
+            "severity": severity or current.get("severity", "medium"),
+            "source": sanitize_value(source) or current.get("source"),
             "updatedAt": ts,
             "lastObservedAt": ts,
-            "evidence": evidence or current.get("evidence"),
-            "next": next_check or current.get("next"),
+            "evidence": sanitize_value(evidence) or current.get("evidence"),
+            "next": sanitize_value(next_check) or current.get("next"),
         })
-    current.setdefault("observations", []).append({"at": ts, "evidence": evidence})
+    if evidence:
+        current.setdefault("observations", []).append({"at": ts, "evidence": sanitize_value(evidence)})
     return current
 
 
-def ensure_status(status):
-    if status not in valid_statuses:
-        raise SystemExit(f"Invalid status: {status}. Expected one of: {', '.join(sorted(valid_statuses))}")
+def get_item(board, item_id):
+    item = board.setdefault("items", {}).get(item_id)
+    if item is None:
+        raise SystemExit(f"No such item: {item_id}")
+    return normalize_item(item)
 
 
 def render_items(items, output_format="markdown"):
@@ -221,16 +338,89 @@ def render_items(items, output_format="markdown"):
         print("No remediation items found.")
         return
     for item in items:
-        print(f"- [{item.get('status','open')}] {item.get('id')} — {item.get('title','(untitled)')}")
+        prefix = f"{item.get('type','manual')}/{item.get('severity','medium')}"
+        print(f"- [{item.get('status','open')}] {item.get('id')} — {item.get('title','(untitled)')} ({prefix})")
         if item.get("source"):
             print(f"  source: {item['source']}")
         if item.get("evidence"):
-            evidence = " ".join(str(item["evidence"]).split())
-            if len(evidence) > 220:
-                evidence = evidence[:217] + "..."
-            print(f"  evidence: {evidence}")
+            print(f"  evidence: {truncate(item['evidence'], 220)}")
+        if item.get("currentWorkaround"):
+            print(f"  workaround: {truncate(item['currentWorkaround'], 180)}")
         if item.get("next"):
             print(f"  next: {item['next']}")
+        if item.get("linkedNote"):
+            print(f"  note: {item['linkedNote']}")
+
+
+def default_note_path(item):
+    return os.path.join(remediation_root, "incidents", slugify(item.get("id", "item")) + ".md")
+
+
+
+def md_escape_cell(value):
+    text = str(value or "")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("|", "\\|")
+    text = text.replace("\n", "<br>")
+    return text
+
+def md_list(values, key):
+    if not values:
+        return "- (none)\n"
+    lines = []
+    for value in values:
+        if isinstance(value, dict):
+            at = value.get("at") or value.get("date") or ""
+            text = value.get(key) or value.get("evidence") or value.get("note") or value.get("step") or value.get("url") or ""
+            suffix = f" — {text}" if text else ""
+            lines.append(f"- {at}{suffix}".rstrip())
+        else:
+            lines.append(f"- {value}")
+    return "\n".join(lines) + "\n"
+
+
+def export_note(board, item_id, path=None):
+    item = get_item(board, item_id)
+    path = path or item.get("linkedNote") or default_note_path(item)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    title = item.get("title") or item_id
+    content = []
+    content.append(f"# {title}\n")
+    content.append(f"> Origin: Exported from remediation board item `{item_id}`.\n")
+    content.append("## Status\n")
+    content.append(f"- State: {item.get('status','open')}\n- Type: {item.get('type','manual')}\n- Severity: {item.get('severity','medium')}\n- Source: {item.get('source','')}\n- First observed: {item.get('createdAt','')}\n- Last observed: {item.get('lastObservedAt','')}\n- Current workaround: {item.get('currentWorkaround','')}\n")
+    content.append("## Symptoms / Summary\n")
+    content.append((item.get("evidence") or "(none)") + "\n")
+    content.append("## Timeline / Observations\n")
+    content.append(md_list(item.get("observations", []), "evidence"))
+    content.append("## Hypotheses\n")
+    if item.get("hypotheses"):
+        for idx, h in enumerate(item["hypotheses"], 1):
+            content.append(f"### H{idx} — {h.get('text','')}\n\n- Confidence: {h.get('confidence','')}\n- Next test: {h.get('next','')}\n")
+    else:
+        content.append("- (none)\n")
+    content.append("## Steps Tried\n")
+    if item.get("stepsTried"):
+        content.append("| Date/time | Step | Result | Keep/Discard |\n|---|---|---|---|\n")
+        for step in item["stepsTried"]:
+            content.append(f"| {md_escape_cell(step.get('at',''))} | {md_escape_cell(step.get('step',''))} | {md_escape_cell(step.get('result',''))} | {md_escape_cell(step.get('keep',''))} |\n")
+    else:
+        content.append("- (none)\n")
+    content.append("## Upstream Links\n")
+    content.append(md_list(item.get("upstream", []), "url"))
+    content.append("## Current Working Rule / Workaround\n")
+    content.append((item.get("currentWorkaround") or "(none)") + "\n")
+    content.append("## Next Checks\n")
+    content.append((item.get("next") or "(none)") + "\n")
+    content.append("## Close Criteria\n")
+    content.append((item.get("closeCriteria") or "(not set)") + "\n")
+    content.append("## Changelog\n")
+    content.append(f"- {now_iso()}: Exported/updated from remediation board.\n")
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(content).rstrip() + "\n")
+    item["linkedNote"] = path
+    item["updatedAt"] = now_iso()
+    return item, path
 
 
 board = load_board()
@@ -259,9 +449,8 @@ if command == "import-cron-errors":
         if consecutive_filter > 1:
             if consecutive < consecutive_filter:
                 continue
-        else:
-            if consecutive <= 0 and last_status != "error":
-                continue
+        elif consecutive <= 0 and last_status != "error":
+            continue
         job_id = job.get("id") or job.get("jobId")
         if not job_id:
             continue
@@ -276,27 +465,43 @@ if command == "import-cron-errors":
         preview = summarize_payload(payload)
         if preview:
             evidence_parts.append(f"payload={preview}")
-        item = upsert_item(
-            board,
-            f"cron:{job_id}",
-            f"Cron error: {job.get('name') or '(unnamed)'}",
-            "cron-error-inspector",
-            "; ".join(evidence_parts),
-            "Fix root cause, then mark fixed-awaiting-rerun; after a clean run mark verified-fixed.",
-            "open",
-        )
-        imported.append(item)
+        imported.append(upsert_item(board, f"cron:{job_id}", f"Cron error: {job.get('name') or '(unnamed)'}", "cron-error-inspector", "; ".join(evidence_parts), "Fix root cause, then mark fixed-awaiting-rerun; after a clean run mark verified-fixed.", "open", "cron-error", "medium"))
     write_board(board)
     print(f"Imported {len(imported)} cron error item(s) into {board_file}.")
     render_items(imported)
 
-elif command == "add":
-    opts, rest = parse_options(args, {"--source", "--evidence", "--next"})
+elif command == "import-incidents":
+    opts, rest = parse_options(args, {"--state-file"})
+    if rest:
+        raise SystemExit(f"Unexpected argument: {' '.join(rest)}")
+    state_path = opts.get("--state-file", incident_state_file)
+    state = load_json(state_path, {"incidents": {}})
+    imported = []
+    severity_map = {"info": "low", "warning": "medium", "critical": "critical", "error": "high"}
+    for key, inc in (state.get("incidents") or {}).items():
+        if not isinstance(inc, dict):
+            continue
+        status = inc.get("status", "firing")
+        if status in {"resolved", "muted"}:
+            continue
+        sev = severity_map.get(str(inc.get("severity", "warning")), str(inc.get("severity", "medium")))
+        if sev not in valid_severities:
+            sev = "medium"
+        evidence = inc.get("summary") or inc.get("message") or json.dumps(inc.get("lastEvidence", {}), sort_keys=True)
+        next_check = "Review machine incident evidence, decide whether to fix, defer, or export an incident note."
+        imported.append(upsert_item(board, f"incident:{key}", f"Machine incident: {key}", "incident-manager", evidence, next_check, "open", "incident", sev))
+    write_board(board)
+    print(f"Imported {len(imported)} machine incident item(s) into {board_file}.")
+    render_items(imported)
+
+elif command in {"add", "add-incident", "add-hack", "add-upstream-watch", "add-upgrade-blocker", "add-security-hardening"}:
+    opts, rest = parse_options(args, {"--source", "--evidence", "--next", "--severity"})
     if len(rest) < 2:
-        raise SystemExit("Usage: add ID TITLE [--source SOURCE] [--evidence TEXT] [--next TEXT]")
+        raise SystemExit(f"Usage: {command} ID TITLE [--source SOURCE] [--evidence TEXT] [--next TEXT]")
+    type_for_command = {"add": "manual", "add-incident": "incident", "add-hack": "hack", "add-upstream-watch": "upstream-watch", "add-upgrade-blocker": "upgrade-blocker", "add-security-hardening": "security-hardening"}[command]
     item_id = rest[0]
     title = " ".join(rest[1:])
-    item = upsert_item(board, item_id, title, opts.get("--source", "manual"), opts.get("--evidence", ""), opts.get("--next", ""), "open")
+    item = upsert_item(board, item_id, title, opts.get("--source", "manual"), opts.get("--evidence", ""), opts.get("--next", ""), "open", type_for_command, opts.get("--severity", "medium"))
     write_board(board)
     render_items([item])
 
@@ -305,31 +510,113 @@ elif command in {"set", "close"}:
     if command == "close":
         if len(rest) != 1:
             raise SystemExit("Usage: close ID [--note TEXT]")
-        item_id = rest[0]
-        status = "verified-fixed"
+        item_id, status = rest[0], "verified-fixed"
     else:
         if len(rest) != 2:
             raise SystemExit("Usage: set ID STATUS [--note TEXT] [--next TEXT]")
         item_id, status = rest
         ensure_status(status)
-    item = board.setdefault("items", {}).get(item_id)
-    if item is None:
-        raise SystemExit(f"No such item: {item_id}")
+    item = get_item(board, item_id)
     ts = now_iso()
     item["status"] = status
     item["updatedAt"] = ts
     if "--next" in opts:
-        item["next"] = opts["--next"]
+        item["next"] = sanitize_value(opts["--next"])
     if "--note" in opts:
-        item.setdefault("notes", []).append({"at": ts, "note": opts["--note"]})
+        item.setdefault("notes", []).append({"at": ts, "note": sanitize_value(opts["--note"])})
     write_board(board)
     render_items([item])
 
+elif command == "observe":
+    opts, rest = parse_options(args, {"--evidence", "--next"})
+    if len(rest) != 1 or "--evidence" not in opts:
+        raise SystemExit("Usage: observe ID --evidence TEXT [--next TEXT]")
+    item = get_item(board, rest[0])
+    old_status = item.get("status", "open")
+    ts = now_iso()
+    if old_status in {"verified-fixed", "deferred", "excluded"}:
+        item["status"] = "open"
+        item.setdefault("notes", []).append({"at": ts, "note": f"Reopened by new observation; previous status was {old_status}."})
+    item["lastObservedAt"] = ts
+    item["updatedAt"] = ts
+    item["evidence"] = sanitize_value(opts["--evidence"])
+    item.setdefault("observations", []).append({"at": ts, "evidence": sanitize_value(opts["--evidence"])})
+    if "--next" in opts:
+        item["next"] = sanitize_value(opts["--next"])
+    write_board(board)
+    render_items([item])
+
+elif command == "tried":
+    opts, rest = parse_options(args, {"--step", "--result", "--keep"})
+    if len(rest) != 1 or "--step" not in opts or "--result" not in opts:
+        raise SystemExit("Usage: tried ID --step TEXT --result TEXT [--keep TEXT]")
+    item = get_item(board, rest[0])
+    item.setdefault("stepsTried", []).append({"at": now_iso(), "step": sanitize_value(opts["--step"]), "result": sanitize_value(opts["--result"]), "keep": sanitize_value(opts.get("--keep", ""))})
+    item["updatedAt"] = now_iso()
+    write_board(board)
+    render_items([item])
+
+elif command == "hypothesis":
+    opts, rest = parse_options(args, {"--confidence", "--next"})
+    if len(rest) < 2:
+        raise SystemExit("Usage: hypothesis ID TEXT [--confidence low|medium|high] [--next TEXT]")
+    confidence = opts.get("--confidence", "medium")
+    if confidence not in {"low", "medium", "high"}:
+        raise SystemExit("Invalid confidence: expected low, medium, or high")
+    item = get_item(board, rest[0])
+    item.setdefault("hypotheses", []).append({"at": now_iso(), "text": sanitize_value(" ".join(rest[1:])), "confidence": confidence, "next": sanitize_value(opts.get("--next", ""))})
+    if "--next" in opts:
+        item["next"] = sanitize_value(opts["--next"])
+    item["updatedAt"] = now_iso()
+    write_board(board)
+    render_items([item])
+
+elif command in {"workaround", "close-criteria"}:
+    if len(args) < 2:
+        raise SystemExit(f"Usage: {command} ID TEXT")
+    item = get_item(board, args[0])
+    key = "currentWorkaround" if command == "workaround" else "closeCriteria"
+    item[key] = sanitize_value(" ".join(args[1:]))
+    item["updatedAt"] = now_iso()
+    write_board(board)
+    render_items([item])
+
+elif command == "upstream":
+    if len(args) != 2:
+        raise SystemExit("Usage: upstream ID URL")
+    item = get_item(board, args[0])
+    entry = {"at": now_iso(), "url": sanitize_value(args[1])}
+    if entry["url"] not in [u.get("url") for u in item.get("upstream", []) if isinstance(u, dict)]:
+        item.setdefault("upstream", []).append(entry)
+    item["updatedAt"] = now_iso()
+    write_board(board)
+    render_items([item])
+
+elif command == "link-note":
+    if len(args) != 2:
+        raise SystemExit("Usage: link-note ID PATH")
+    item = get_item(board, args[0])
+    item["linkedNote"] = sanitize_value(args[1])
+    item["updatedAt"] = now_iso()
+    write_board(board)
+    render_items([item])
+
+elif command == "export-note":
+    opts, rest = parse_options(args, {"--path"})
+    if len(rest) != 1:
+        raise SystemExit("Usage: export-note ID [--path PATH]")
+    item, path = export_note(board, rest[0], sanitize_value(opts.get("--path")) if opts.get("--path") else None)
+    write_board(board)
+    print(f"Wrote incident note: {path}")
+    render_items([item])
+
 elif command == "list":
-    opts, rest = parse_options(args, {"--status"})
+    format_tokens = [token for token in args if token in {"--json", "--markdown"}]
+    option_args = [token for token in args if token not in {"--json", "--markdown"}]
+    opts, rest = parse_options(option_args, {"--status", "--type"})
     output_format = "markdown"
     cleaned = []
-    for token in rest:
+    for token in format_tokens:
         if token == "--json":
             output_format = "json"
         elif token == "--markdown":
@@ -339,18 +626,23 @@ elif command == "list":
     if cleaned:
         raise SystemExit(f"Unexpected argument: {' '.join(cleaned)}")
     status_filter = opts.get("--status", "all")
+    type_filter = opts.get("--type", "all")
     if status_filter != "all":
         ensure_status(status_filter)
-    items = sorted(board.get("items", {}).values(), key=lambda i: (i.get("status", ""), i.get("id", "")))
+    if type_filter != "all":
+        ensure_type(type_filter)
+    items = [normalize_item(item) for item in board.get("items", {}).values()]
+    items = sorted(items, key=lambda i: (i.get("status", ""), i.get("type", ""), i.get("id", "")))
     if status_filter != "all":
         items = [item for item in items if item.get("status") == status_filter]
+    if type_filter != "all":
+        items = [item for item in items if item.get("type") == type_filter]
     render_items(items, output_format)
 
 elif command == "show":
-    opts, rest = parse_options(args, set())
     output_format = "markdown"
     cleaned = []
-    for token in rest:
+    for token in args:
         if token == "--json":
             output_format = "json"
         elif token == "--markdown":
@@ -359,11 +651,5 @@ elif command == "show":
             cleaned.append(token)
     if len(cleaned) != 1:
         raise SystemExit("Usage: show ID [--json|--markdown]")
-    item = board.get("items", {}).get(cleaned[0])
-    if item is None:
-        raise SystemExit(f"No such item: {cleaned[0]}")
-    render_items([item], output_format)
+    render_items([get_item(board, cleaned[0])], output_format)
 PY
-}
-
-python_board "$@"

@@ -45,15 +45,36 @@ openclaw gateway restart
 
 ### Remediation board for recurring findings
 
+Think of `incident-manager.sh` as the smoke alarm and `remediation-board.sh` as the repair board. Machine incidents remain under `~/.openclaw/logs`; the remediation board tracks what a human/agent should fix, what was tried, the current workaround, and what evidence proves the fix is done.
+
 When a check surfaces multiple issues, avoid repeatedly reporting only the loudest subset. Import findings into the remediation board, then move each item through `open`, `in-progress`, `fixed-awaiting-rerun`, `verified-fixed`, `deferred`, or `excluded`.
+
+Mandatory guardrail: if an investigation finds a real local OpenClaw error/regression, hack/workaround, security concern, or recurring ops finding, create or update a remediation-board item immediately in the same turn. The remediation board is the local repair loop for the installed OpenClaw instance. Upstream issues/PRs are optional metadata; link them with `upstream` only when they exist, but never let an upstream code thread substitute for the local board item and close criteria.
 
 ```bash
 bash scripts/remediation-board.sh import-cron-errors
+bash scripts/remediation-board.sh import-incidents
 bash scripts/remediation-board.sh set cron:<job-id> fixed-awaiting-rerun --note "payload corrected; waiting for scheduled rerun"
 bash scripts/remediation-board.sh close cron:<job-id> --note "next run succeeded"
 ```
 
 Use `fixed-awaiting-rerun` when the suspected fix is applied but the cron/job has not produced a clean run yet. Use `deferred` or `excluded` when the operator explicitly parks an item.
+
+For recurring bugs or annoying weirdness, check the existing board before diagnosing from scratch, then create or update an incident note:
+
+```bash
+bash scripts/remediation-board.sh list --type incident
+bash scripts/remediation-board.sh show telegram-split
+bash scripts/remediation-board.sh add-incident telegram-split "Telegram topic replies split" --evidence "Observed in forum topic"
+bash scripts/remediation-board.sh hypothesis telegram-split "Preview draft lane sends instead of edits" --confidence medium
+bash scripts/remediation-board.sh tried telegram-split --step "Checked release notes" --result "Found related Telegram delivery fixes"
+bash scripts/remediation-board.sh workaround telegram-split "Use explicit message.send for topic-visible replies"
+bash scripts/remediation-board.sh upstream telegram-split https://github.com/example/repo/issues/123
+bash scripts/remediation-board.sh close-criteria telegram-split "Topic smoke test sends one correct-thread reply"
+bash scripts/remediation-board.sh export-note telegram-split
+```
+
+`export-note` writes a markdown note under `$OPENCLAW_REMEDIATION_ROOT/incidents/` or `~/.openclaw/remediation/incidents/` by default. Use it when the board item needs a readable investigation notebook with symptoms, observations, hypotheses, steps tried, workaround, upstream links, next checks, and close criteria.
 
 
 ### Gateway Issues

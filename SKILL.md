@@ -38,7 +38,7 @@ On Knox's machine, the canonical ops checkout is `/Users/knox/Developer/openclaw
 | `prompt-truncation-report.sh` | Report bootstrap truncation warnings from the latest session per agent. Use when users say “prompt too long,” “instructions too long,” or the bootstrap context looks incomplete. |
 | `cron-optimize.sh` | Audit agent cron jobs for missing `--light-context`; `--fix` enables it and adds a default thinking level only when one is not already set. |
 | `cron-error-inspector.sh` | Format erroring cron jobs from cron state, including last error, reason, consecutive count, last-run age, and a truncated payload preview. |
-| `remediation-board.sh` | Durable work queue for surfaced ops findings. Import cron errors, mark items fixed-awaiting-rerun/verified/deferred, and avoid re-reporting the same subset. |
+| `remediation-board.sh` | Human/agent repair board for surfaced ops findings. Import cron or machine incidents, track recurring bugs, hacks/workarounds, upstream watches, incident notes, hypotheses, steps tried, and verification state. |
 | `agent-dirs-audit.sh` | Audit unconfigured dirs under `~/.openclaw/agents/`. Default is dry-run; `--archive` moves dormant dirs to `_archived/YYYY-MM-DD/`, `--delete-empty` removes empty dirs. |
 | `backup-rotate.sh` | Rotate generic `*.bak*` files across `~/.openclaw`, grouped by the path prefix before `.bak`. Keeps the newest N per group; dry-run by default, `--apply` to delete. |
 | `context-audit.sh` | Audit AGENTS.md, MEMORY.md, and SOUL*.md for file bloat. Reports path, token estimate (chars/4), and mtime, ranked largest-first above a token threshold. |
@@ -87,8 +87,25 @@ bash scripts/cron-error-inspector.sh --agent atlas --consecutive 2
 
 # Track surfaced findings through completion:
 bash scripts/remediation-board.sh import-cron-errors
+bash scripts/remediation-board.sh import-incidents
 bash scripts/remediation-board.sh list
 bash scripts/remediation-board.sh set cron:<job-id> fixed-awaiting-rerun --note "payload fixed"
+
+# Mandatory: when investigation finds a real local OpenClaw error,
+# regression, hack/workaround, security concern, or recurring ops finding,
+# create/update a board item immediately. The board is the local repair loop;
+# upstream links are optional metadata only when an external fix also exists.
+bash scripts/remediation-board.sh add-incident log-gap "Log sweep missed runtime errors" --evidence "tmp OpenClaw log contained active failure"
+bash scripts/remediation-board.sh close-criteria log-gap "Local log-sweep catches the failure class and the installed workflow is synced"
+
+# Track a recurring bug / incident note (check existing board first):
+bash scripts/remediation-board.sh list --type incident
+bash scripts/remediation-board.sh show telegram-split
+bash scripts/remediation-board.sh add-incident telegram-split "Telegram topic replies split" --evidence "Observed in forum topic"
+bash scripts/remediation-board.sh hypothesis telegram-split "Preview draft lane sends instead of edits" --confidence medium
+bash scripts/remediation-board.sh tried telegram-split --step "Checked release notes" --result "Found related Telegram delivery fixes"
+bash scripts/remediation-board.sh workaround telegram-split "Use explicit message.send for topic-visible replies"
+bash scripts/remediation-board.sh export-note telegram-split
 
 # Audit unconfigured agent dirs:
 bash scripts/agent-dirs-audit.sh
@@ -171,6 +188,7 @@ tail -80 ~/.openclaw/logs/gateway.err.log
 
 Interpretation rules:
 
+- If an investigation surfaces a real local OpenClaw error/regression, hack/workaround, security concern, or recurring ops finding, create or update a remediation-board item immediately. This is about the local OpenClaw repair loop, not repository hygiene. Attach evidence and set close criteria; link upstream only if an external issue/PR also exists.
 - If `heal.sh` says `Gateway failed to start`, immediately re-check with `openclaw gateway status` and an HTTP probe. `heal.sh` can retain an early failed probe in its final summary even after launchd has restarted the gateway successfully.
 - If `daily-digest.sh` reports auth errors for Codex-backed agents, verify with the Codex CLI command above before calling it auth. Add `</dev/null` to avoid `codex exec` waiting forever on stdin (`Reading additional input from stdin...`). If direct Codex still times out but `openclaw agent --agent knox --session-id health-probe-$(date +%s) --message "Health probe. Reply exactly: OPENCLAW_ALIVE" --thinking low --timeout 240 --json` succeeds, treat the agent runtime as healthy and the direct CLI probe as a separate Codex CLI/harness issue. `codex app-server client is closed` is a bundled Codex subprocess failure, not an OpenClaw auth failure.
 - If `openclaw gateway status` reports an entrypoint mismatch, run critical probes through the same entrypoint launchd is using before trusting CLI-only failures. Example: `/opt/homebrew/opt/node/bin/node /opt/homebrew/lib/node_modules/openclaw/dist/index.js memory status --deep`.
