@@ -484,6 +484,47 @@ test_get_openclaw_version_normalizes_missing_v_prefix() {
   [[ "$version" == "v2026.4.1" ]] || fail "expected normalized version, got: $version"
 }
 
+test_lib_openclaw_wrapper_uses_host_home_from_nested_agent_home() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  local operator_home="$TEST_ROOT/operator"
+  local nested_home="$operator_home/.openclaw/agents/main/agent/codex/home"
+  mkdir -p "$operator_home/.openclaw" "$nested_home" "$TEST_ROOT/bin"
+  printf '{"gateway":{"port":12345}}\n' >"$operator_home/.openclaw/openclaw.json"
+  mkdir -p "$nested_home/.openclaw"
+  printf '{"gateway":{"port":99999}}\n' >"$nested_home/.openclaw/openclaw.json"
+
+  cat >"$TEST_ROOT/bin/openclaw" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${1:-}" in
+  show-home)
+    printf '%s\n' "$HOME"
+    ;;
+  --version|-V)
+    printf 'v2026.2.12\n'
+    ;;
+esac
+EOF
+  chmod +x "$TEST_ROOT/bin/openclaw"
+
+  local output
+  output="$(
+    HOME="$nested_home"
+    export HOME
+    source "$ROOT_DIR/scripts/lib.sh"
+    printf 'host=%s\n' "$OPENCLAW_HOST_HOME"
+    printf 'cli-home=%s\n' "$(openclaw show-home)"
+    printf 'gateway-port=%s\n' "$(get_gateway_port)"
+  )"
+
+  assert_contains "$output" "host=$operator_home"
+  assert_contains "$output" "cli-home=$operator_home"
+  assert_contains "$output" "gateway-port=12345"
+}
+
 test_health_check_passes_for_valid_targets() {
   setup_fake_env
   trap teardown_fake_env RETURN
@@ -1666,6 +1707,7 @@ run_test test_lib_removes_generic_eval_exec_helpers
 run_test test_heal_incident_logging_no_longer_embeds_shell_generated_python
 run_test test_security_scan_detects_nested_files_and_permissions
 run_test test_get_openclaw_version_normalizes_missing_v_prefix
+run_test test_lib_openclaw_wrapper_uses_host_home_from_nested_agent_home
 run_test test_health_check_passes_for_valid_targets
 run_test test_health_check_falls_back_to_etime_on_macos
 run_test test_security_scan_redacts_secret_values

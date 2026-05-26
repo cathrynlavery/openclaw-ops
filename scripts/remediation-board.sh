@@ -6,9 +6,10 @@ source "$LIB_DIR/lib.sh"
 
 require_tools python3 || exit 1
 
-BOARD_FILE="${OPENCLAW_REMEDIATION_BOARD_FILE:-$HOME/.openclaw/remediation-board.json}"
-REMEDIATION_ROOT="${OPENCLAW_REMEDIATION_ROOT:-$HOME/.openclaw/remediation}"
-INCIDENT_STATE_FILE="${OPENCLAW_INCIDENT_STATE_FILE:-$HOME/.openclaw/logs/incidents-state.json}"
+OPENCLAW_STATE_HOME="${OPENCLAW_STATE_HOME:-${OPENCLAW_HOST_HOME:-$HOME}}"
+BOARD_FILE="${OPENCLAW_REMEDIATION_BOARD_FILE:-$OPENCLAW_STATE_HOME/.openclaw/remediation-board.json}"
+REMEDIATION_ROOT="${OPENCLAW_REMEDIATION_ROOT:-$OPENCLAW_STATE_HOME/.openclaw/remediation}"
+INCIDENT_STATE_FILE="${OPENCLAW_INCIDENT_STATE_FILE:-$OPENCLAW_STATE_HOME/.openclaw/logs/incidents-state.json}"
 COMMAND="${1:-}"
 if [[ $# -gt 0 ]]; then
   shift

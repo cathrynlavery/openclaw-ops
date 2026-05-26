@@ -147,6 +147,12 @@ bash scripts/security-scan.sh --fix
 openclaw --version
 ```
 
+When running these scripts from a Codex/OpenClaw agent session, the shell may
+inherit a nested agent `HOME`. The scripts source `scripts/lib.sh`, which
+detects that case and runs OpenClaw CLI probes with the host owner home so they
+read the real gateway token. For one-off raw CLI commands from such sessions,
+prefix with `HOME=/path/to/operator-home` or set `OPENCLAW_HOST_HOME`.
+
 If outdated: `curl -fsSL https://openclaw.ai/install.sh | bash && openclaw gateway restart`
 
 After any version upgrade, run `check-update.sh` to catch breaking config changes.
