@@ -70,7 +70,7 @@ setup_fake_env() {
   fi
   export HOME="$TEST_HOME"
   export USERPROFILE="$TEST_HOME"
-  export PATH="$TEST_ROOT/bin:$PATH"
+  export PATH="$TEST_ROOT/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   mkdir -p "$HOME/.openclaw/logs" "$HOME/.openclaw" "$TEST_ROOT/bin"
   mkdir -p "$HOME/.config/systemd/user" "$TEST_ROOT/etc/systemd/system"
   export OPENCLAW_SECURITY_SCAN_SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
@@ -82,6 +82,11 @@ set -euo pipefail
 
 if [[ -n "${OPENCLAW_CALL_LOG:-}" ]]; then
   printf 'openclaw|skip=%s|%s\n' "${OPENCLAW_SKIP_WRAPPER_BACKUP:-0}" "$*" >>"$OPENCLAW_CALL_LOG"
+fi
+
+if [[ "${OPENCLAW_FAIL_COMMAND:-}" == "$*" ]]; then
+  echo "simulated openclaw failure: $*" >&2
+  exit 42
 fi
 
 case "${1:-}" in
@@ -743,6 +748,113 @@ EOF
   assert_eq "$count" "1"
 
   rm -f "$ROOT_DIR/tests/.session-monitor-stub.sh"
+}
+
+
+test_update_cutover_preflight_captures_gates_without_running_update() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  local cutover_dir="$HOME/.openclaw/update-cutovers/test-cutover"
+  local call_log="$HOME/.openclaw/openclaw-calls.log"
+  export OPENCLAW_CALL_LOG="$call_log"
+  export OPENCLAW_HACK_AUDIT_LOG="$HOME/.openclaw/hack-audit-log.md"
+  printf 'custom runtime path workaround\n' >"$OPENCLAW_HACK_AUDIT_LOG"
+
+  local output
+  output="$(bash "$ROOT_DIR/scripts/update-cutover.sh" --preflight --target-version v2026.5.12 --lane official --app-scope cli --cutover-dir "$cutover_dir" 2>&1)"
+  assert_contains "$output" "Preflight report written"
+  assert_contains "$output" "Review and complete the cutover gate before running openclaw update"
+
+  [[ -f "$cutover_dir/CUTOVER.md" ]] || fail "CUTOVER.md was not created"
+  [[ -f "$cutover_dir/before/openclaw-config.redacted.json" ]] || fail "config baseline was not captured"
+  [[ -f "$cutover_dir/before/cron-list.json" ]] || fail "cron baseline was not captured"
+
+  local report
+  report="$(cat "$cutover_dir/CUTOVER.md")"
+  assert_contains "$report" "Lane: official"
+  assert_contains "$report" "App scope: cli"
+  assert_contains "$report" "Release notes reviewed against current setup"
+  assert_contains "$report" "Hack/workaround audit reviewed"
+  assert_contains "$report" "Rollback target/path confirmed"
+  assert_contains "$report" "custom runtime path workaround"
+  assert_not_contains "$(cat "$call_log")" "openclaw|skip=0|update"
+  unset OPENCLAW_CALL_LOG
+}
+
+test_update_cutover_post_fails_on_version_mismatch() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  local cutover_dir="$HOME/.openclaw/update-cutovers/test-cutover-post"
+  export OPENCLAW_STATUS_VERSION="v2026.5.11"
+
+  local output rc
+  set +e
+  output="$(bash "$ROOT_DIR/scripts/update-cutover.sh" --post --target-version v2026.5.12 --lane official --app-scope none --cutover-dir "$cutover_dir" 2>&1)"
+  rc=$?
+  set -e
+
+  [[ "$rc" != "0" ]] || fail "expected post verification to fail on version mismatch"
+  assert_contains "$output" "service version mismatch"
+  assert_contains "$output" "Post-cutover verification failed"
+  [[ -f "$cutover_dir/after/openclaw-version.txt" ]] || fail "after-state version capture missing"
+}
+
+test_update_cutover_post_passes_when_version_matches() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  local cutover_dir="$HOME/.openclaw/update-cutovers/test-cutover-post-pass"
+  local stable_bin_dir="${OPENCLAW_TEST_STABLE_BIN_DIR:-$ROOT_DIR/.test-openclaw-bin}"
+  mkdir -p "$stable_bin_dir"
+  cp "$TEST_ROOT/bin/openclaw" "$stable_bin_dir/openclaw"
+  chmod +x "$stable_bin_dir/openclaw"
+  PATH="$stable_bin_dir:${PATH#*:}"
+  export PATH
+  export OPENCLAW_STATUS_VERSION="v2026.5.12"
+
+  local output
+  output="$(bash "$ROOT_DIR/scripts/update-cutover.sh" --post --target-version v2026.5.12 --lane official --app-scope none --cutover-dir "$cutover_dir" 2>&1)"
+  assert_contains "$output" "service version matches target"
+  assert_contains "$output" "gateway status completed successfully"
+  assert_contains "$output" "channels probe completed successfully"
+  assert_contains "$output" "Post-cutover verification passed"
+  [[ -f "$cutover_dir/after/channels-status-probe.txt" ]] || fail "channels probe capture missing"
+}
+
+test_update_cutover_post_fails_on_channel_probe_failure() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  local cutover_dir="$HOME/.openclaw/update-cutovers/test-cutover-channel-fail"
+  export OPENCLAW_STATUS_VERSION="v2026.5.12"
+  export OPENCLAW_FAIL_COMMAND="channels status --probe"
+
+  local output rc
+  set +e
+  output="$(bash "$ROOT_DIR/scripts/update-cutover.sh" --post --target-version v2026.5.12 --lane official --app-scope none --cutover-dir "$cutover_dir" 2>&1)"
+  rc=$?
+  set -e
+
+  [[ "$rc" != "0" ]] || fail "expected post verification to fail on channel probe failure"
+  assert_contains "$output" "channels probe failed or was not captured"
+  assert_contains "$output" "Post-cutover verification failed"
+}
+
+test_update_cutover_missing_argument_value_shows_usage() {
+  setup_fake_env
+  trap teardown_fake_env RETURN
+
+  local output rc
+  set +e
+  output="$(bash "$ROOT_DIR/scripts/update-cutover.sh" --preflight --target-version 2>&1)"
+  rc=$?
+  set -e
+
+  [[ "$rc" != "0" ]] || fail "expected missing argument value to fail"
+  assert_contains "$output" "Missing value for --target-version"
+  assert_contains "$output" "Usage:"
 }
 
 # ── check_agent_layer_health() coverage ──────────────────────────────────────
@@ -1706,6 +1818,11 @@ run_test test_version_change_survives_watchdog_for_check_update
 run_test test_lib_removes_generic_eval_exec_helpers
 run_test test_heal_incident_logging_no_longer_embeds_shell_generated_python
 run_test test_security_scan_detects_nested_files_and_permissions
+run_test test_update_cutover_preflight_captures_gates_without_running_update
+run_test test_update_cutover_post_fails_on_version_mismatch
+run_test test_update_cutover_post_passes_when_version_matches
+run_test test_update_cutover_post_fails_on_channel_probe_failure
+run_test test_update_cutover_missing_argument_value_shows_usage
 run_test test_get_openclaw_version_normalizes_missing_v_prefix
 run_test test_lib_openclaw_wrapper_uses_host_home_from_nested_agent_home
 run_test test_health_check_passes_for_valid_targets

@@ -26,6 +26,7 @@ On Knox's machine, the canonical ops checkout is `/Users/knox/Developer/openclaw
 | Script | When to use |
 |--------|-------------|
 | `heal.sh` | First thing on any health check — fixes gateway, auth mode, exec approvals, crons, and stuck sessions in one pass |
+| `update-cutover.sh` | Controlled upgrade guardrail — preflight baseline, official/custom lane gate, macOS app-scope check, hack-audit prompt, and post-cutover verification |
 | `post-update.sh` | Run after `openclaw update` — orchestrates check-update, heal, workspace reconcile, security scan, and final health check in sequence |
 | `watchdog.sh` | Continuous monitoring; run every 5 min via LaunchAgent. HTTP health check → auto-restart → escalation after 3 failures |
 | `watchdog-install.sh` | Set up the watchdog as a macOS LaunchAgent (survives reboots) |
@@ -57,6 +58,12 @@ On Knox's machine, the canonical ops checkout is `/Users/knox/Developer/openclaw
 ```bash
 # One-pass heal:
 bash scripts/heal.sh
+
+# Controlled OpenClaw upgrade cutover:
+bash scripts/update-cutover.sh --preflight --target-version v2026.X.Y --lane official --app-scope cli
+# ...run the approved OpenClaw update...
+bash scripts/post-update.sh
+bash scripts/update-cutover.sh --post --target-version v2026.X.Y --lane official --app-scope cli --cutover-dir ~/.openclaw/update-cutovers/<stamp>-v2026.X.Y
 
 # Install always-on watchdog (macOS):
 bash scripts/watchdog-install.sh
@@ -157,6 +164,19 @@ prefix with `HOME=/path/to/operator-home` or set `OPENCLAW_HOST_HOME`.
 If outdated: `curl -fsSL https://openclaw.ai/install.sh | bash && openclaw gateway restart`
 
 After any version upgrade, run `check-update.sh` to catch breaking config changes.
+
+## Controlled Update Cutover
+
+For routine patch updates on simple installs, `post-update.sh` is enough after the update. For production gateways, macOS installs, custom/local runtimes, or any update meant to fix a live incident, treat the update as a controlled cutover:
+
+1. Run `update-cutover.sh --preflight --target-version <version> --lane official|custom --app-scope cli|app|both|none`.
+2. Review the generated `CUTOVER.md`: release risks, official/custom lane, macOS app scope, current config/cron/channel baseline, hack/workaround audit, rollback target, and single-restart plan.
+3. Run the approved OpenClaw update only after the cutover gate is satisfied.
+4. Run `post-update.sh`.
+5. Run `update-cutover.sh --post ... --cutover-dir <same-dir>` and any host-specific channel smoke tests.
+6. If verification fails, stop layering fixes; roll back to the prior known-good runtime target and verify restored health.
+
+`update-cutover.sh` intentionally does **not** execute `openclaw update`; it records evidence and enforces the decision gates around the update.
 
 ---
 
