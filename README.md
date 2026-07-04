@@ -183,3 +183,11 @@ bash tests/run.sh
 - Do not publish screenshots or pasted scan output that contain real tokens, session material, or private channel identifiers.
 - Keep examples generic: placeholder tokens, placeholder user IDs, and non-sensitive hostnames only.
 - Run `bash tests/run.sh` before publishing changes.
+
+---
+
+## About
+
+Made by **Cathryn Lavery** — founder of [BestSelf.co](https://bestself.co?utm_source=openclaw-ops&utm_medium=readme&utm_campaign=github&utm_content=bio). I write about AI, entrepreneurship, and running agent teams at [littlemight.com](https://littlemight.com?utm_source=openclaw-ops&utm_medium=readme&utm_campaign=github&utm_content=bio) — blog + newsletter.
+
+If this is useful, **star the repo** and come [say hi on X](https://x.com/cathrynlavery).
